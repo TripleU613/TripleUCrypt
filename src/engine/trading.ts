@@ -5,6 +5,7 @@ import { runRefreshPositions } from './positions.js'
 import { getBroker as bankingGetBroker, recordBuyWindow, slippageCapCents } from '../banking/index.js'
 import { notify } from './notify.js'
 import { recordTrade } from '../io/trade-audit.js'
+import { reconcileHolding, describeMismatch } from './reconcile.js'
 
 // ── Banking import ────────────────────────────────────────────────────────────
 
@@ -26,6 +27,52 @@ export function getBroker(): BrokerLike | null {
 /** Most recent fills kept in `state.orders` (a UI display buffer, and part of
  *  every SSE snapshot — so it must not grow unbounded over a long session). */
 const ORDERS_MAX = 50
+
+/**
+ * Confirm a live fill actually produced the position it claimed.
+ *
+ * Runs detached (the trade is already done — this only decides what we tell the
+ * user and what we record). Never throws into the trading path.
+ *
+ * On a confirmed mismatch it warns explicitly and writes an `unreconciled`
+ * audit row, because a fill the exchange reported but the book does not show is
+ * exactly the case where silence loses track of real money.
+ */
+async function _verifyFilled(
+  broker: BrokerLike,
+  tokenId: string,
+  shares: number,
+  direction: string,
+): Promise<void> {
+  try {
+    const outcome = await reconcileHolding({
+      expected: shares,
+      readHeld: async () => {
+        const port = await broker.getPortfolio()
+        const pos = (port.positions ?? []).find(p => p.token === tokenId)
+        return pos ? Number(pos.shares) : 0
+      },
+    })
+    if (outcome.ok) return
+
+    const msg = describeMismatch(outcome)
+    console.error(`[reconcile] BUY ${direction} ${tokenId.slice(0, 12)} ${msg}`)
+    notify(msg, 'error')
+    recordTrade({
+      action: 'buy',
+      mode: 'live',
+      asset: String(state.chart_asset ?? '?'),
+      direction,
+      token: tokenId,
+      shares,
+      unreconciled: true,
+      observed_shares: outcome.observed ?? 0,
+    })
+  } catch (e) {
+    // Verification failing must never look like the trade failing.
+    console.warn('[reconcile] check errored (fill itself unaffected):', e instanceof Error ? e.message : e)
+  }
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -275,6 +322,20 @@ export async function runBuy(direction: string): Promise<void> {
     return
   }
 
+  // Preflight (live only): refuse an order we can already tell will not fill.
+  // Without this, an over-sized buy got signed and posted, then bounced with a
+  // raw CLOB error — which reads to the user as "transactions aren't going
+  // through" rather than "you don't have the money". Uses the last known cash
+  // and only refuses on a CONFIDENT shortfall, so a stale/failed balance read
+  // can never block a legitimate trade.
+  if (!state.practice) {
+    const cash = Number(state.stat_spendable ?? state.stat_cash ?? NaN)
+    if (Number.isFinite(cash) && cash > 0 && size > cash + 1e-9) {
+      notify(`Not enough USDC — $${size.toFixed(2)} order, $${cash.toFixed(2)} available`, 'warn')
+      return
+    }
+  }
+
   patch('loading', true)
 
   try {
@@ -348,6 +409,11 @@ export async function runBuy(direction: string): Promise<void> {
       if (endTsAtBuy > 0) recordBuyWindow(tokenId, endTsAtBuy - intervalSAtBuy, direction)
       // Refresh balance + positions so the new holding shows up to sell.
       await Promise.all([runRefreshBalance(), runRefreshPositions()])
+      // LIVE ONLY: independently confirm the position exists. A reported fill is
+      // a claim, not proof — and a success toast over a position that never
+      // arrived is the worst way to lose track of real money. Practice settles
+      // locally and instantly, so there is nothing to verify there.
+      if (!state.practice) void _verifyFilled(broker, tokenId, fill.shares, direction)
     } else {
       notify(fill.error || 'Order failed', 'error')
     }

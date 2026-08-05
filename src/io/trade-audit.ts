@@ -47,6 +47,12 @@ export interface TradeAuditEntry {
   partial?: boolean
   /** Positions redeemed (claim only). */
   claimed?: number
+  /** Set when a reported fill could NOT be confirmed against the position book.
+   *  These rows are the audit trail for "the exchange said filled but nothing
+   *  showed up" — the case worth investigating before trading again. */
+  unreconciled?: boolean
+  /** Holding actually observed when a reconcile failed. */
+  observed_shares?: number
 }
 
 /**
