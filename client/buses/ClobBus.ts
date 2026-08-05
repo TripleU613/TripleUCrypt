@@ -66,6 +66,26 @@ if (typeof window !== 'undefined') {
       reconnectT = setTimeout(() => { sentKey = ''; open(); }, backoff);
       backoff = Math.min(backoff * 2, 8000);
     }
+    /**
+     * Force an immediate recovery attempt: reset backoff and reopen if the
+     * socket isn't healthily OPEN. Called on tab wake / network return, because
+     * the zombie watchdog below runs on a timer the browser throttles (or
+     * freezes) while the tab is hidden.
+     */
+    function kick() {
+      backoff = 1000;
+      if (!wanted.length) return;
+      if (!ws || ws.readyState === 2 || ws.readyState === 3) {
+        if (reconnectT) { clearTimeout(reconnectT); reconnectT = null; }
+        sentKey = ''; open();
+        return;
+      }
+      // OPEN but silent too long => zombie; replace it.
+      if (ws.readyState === 1 && lastMsg && (Date.now() - lastMsg) > 30000) {
+        if (reconnectT) { clearTimeout(reconnectT); reconnectT = null; }
+        sentKey = ''; open();
+      }
+    }
     function open() {
       if (reconnectT) clearTimeout(reconnectT);
       if (ping) clearInterval(ping);
@@ -110,6 +130,7 @@ if (typeof window !== 'undefined') {
         recompute(); scheduleSync();
         return () => { subs.delete(cb); recompute(); scheduleSync(); };
       },
+      kick,
     };
     // @ts-ignore
     return window.__tcCLOB;
@@ -121,4 +142,11 @@ export function sub(tokens: string[], cb: (token: string, ask: number, bid: numb
   if (typeof window === 'undefined') return () => {};
   // @ts-ignore
   return window.__tcGetCLOB().sub(tokens, cb);
+}
+
+/** Force an immediate reconnect attempt (tab wake / network back). */
+export function kick(): void {
+  if (typeof window === 'undefined') return;
+  // @ts-ignore
+  try { window.__tcGetCLOB().kick?.(); } catch (e) {}
 }

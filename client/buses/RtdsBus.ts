@@ -26,8 +26,35 @@ if (typeof window !== 'undefined') {
     function schedule() {
       if (timer) clearTimeout(timer);
       timer = setTimeout(connect, backoff);
-      backoff = Math.min(backoff * 2, 120000);
+      // Cap at 15s, not 2 minutes: this is a live trading screen, and a
+      // long-backed-off socket used to mean minutes of frozen prices after any
+      // network blip. kick() also resets this to the floor on tab wake.
+      backoff = Math.min(backoff * 2, 15000);
       krakenStart();
+    }
+
+    /**
+     * Force an immediate recovery attempt: reset the backoff and reconnect if
+     * the socket is not healthily OPEN. Called when the tab becomes visible
+     * again or the network comes back, because while hidden the watchdog timer
+     * above is throttled (or frozen) and may not have run for minutes.
+     */
+    function kick() {
+      backoff = 2000;
+      const now = Date.now();
+      if (!ws || ws.readyState === 2 || ws.readyState === 3) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        connect();
+        return;
+      }
+      // OPEN but silent for too long => zombie; replace it.
+      if (ws.readyState === 1 && lastMsg && (now - lastMsg) > 15000) {
+        try { ws.onclose = null; ws.close(); } catch (e) {}
+        ws = null;
+        if (ping) clearInterval(ping);
+        if (timer) { clearTimeout(timer); timer = null; }
+        connect();
+      }
     }
     function connect() {
       try { ws = new WebSocket('wss://ws-live-data.polymarket.com'); }
@@ -119,7 +146,10 @@ if (typeof window !== 'undefined') {
 
     connect();
     // @ts-ignore
-    window.__tcRTDS = { sub(cb: (arr: unknown[]) => void) { subs.add(cb); return () => subs.delete(cb); } };
+    window.__tcRTDS = {
+      sub(cb: (arr: unknown[]) => void) { subs.add(cb); return () => subs.delete(cb); },
+      kick,
+    };
     // @ts-ignore
     return window.__tcRTDS;
   };
@@ -130,4 +160,11 @@ export function sub(cb: (arr: unknown[]) => void): () => void {
   if (typeof window === 'undefined') return () => {};
   // @ts-ignore
   return window.__tcGetRTDS().sub(cb);
+}
+
+/** Force an immediate reconnect attempt (tab wake / network back). */
+export function kick(): void {
+  if (typeof window === 'undefined') return;
+  // @ts-ignore
+  try { window.__tcGetRTDS().kick?.(); } catch (e) {}
 }

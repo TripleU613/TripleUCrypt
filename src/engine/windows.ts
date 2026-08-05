@@ -5,6 +5,7 @@ import { bus } from '../bus.js'
 import type { TimeSlot, MarketWindow } from '../types.js'
 import WebSocket from 'ws'
 import { fetchOpenPriceAt } from '../io/kraken.js'
+import { guardSocket } from '../io/ws-guard.js'
 
 // ── IO imports ────────────────────────────────────────────────────────────────
 
@@ -254,6 +255,9 @@ export async function runStreamPolymarket(signal: AbortSignal): Promise<void> {
     try {
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(CLOB_WS_URL)
+        // Half-open sockets never fire close/error, which would hang this loop
+        // forever. Ping/pong probe terminates a dead peer so the loop reconnects.
+        guardSocket(ws, { label: 'clob', staleMs: 60000 })
 
         ws.on('open', () => {
           ws.send(JSON.stringify({ assets_ids: tokens, type: 'market' }))

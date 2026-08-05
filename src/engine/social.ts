@@ -3,6 +3,7 @@ import type { AppState } from './state.js'
 import { pollSleep } from './performance.js'
 import { bus } from '../bus.js'
 import { notify } from './notify.js'
+import { guardSocket } from '../io/ws-guard.js'
 
 // ── IO imports ────────────────────────────────────────────────────────────────
 
@@ -116,6 +117,9 @@ export async function runStreamSocial(signal: AbortSignal): Promise<void> {
     try {
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(RTDS_URL)
+        // Half-open sockets never fire close/error, which would hang this loop
+        // forever. Ping/pong probe terminates a dead peer so the loop reconnects.
+        guardSocket(ws, { label: 'rtds', staleMs: 60000 })
 
         ws.on('open', () => {
           const subFn = _pm?.['rtdsTradesSubscribe']

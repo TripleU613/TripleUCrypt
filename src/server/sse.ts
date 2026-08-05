@@ -47,13 +47,19 @@ export function sseHandler(req: Request, res: Response): void {
 
   _clients.add(res)
 
-  // Heartbeat: an SSE comment every 15s keeps the connection alive through
-  // proxies (cloudflared/nginx idle timeouts) during quiet periods.
-  // The engine runs CONTINUOUSLY from boot — we deliberately do NOT restart
-  // background tasks per connection. That per-connect restart was what stalled
-  // the clock and greyed the screen on every reconnect / extra tab.
+  // Heartbeat every 15s. Keeps the connection alive through proxies
+  // (cloudflared/nginx idle timeouts) during quiet periods AND — critically —
+  // gives the browser something it can actually OBSERVE.
+  //
+  // This used to be an SSE comment (`: ping`). Comments keep proxies happy but
+  // fire NO listener in EventSource, so the client had no way to tell a live
+  // stream from a dead one. On a half-open connection (laptop sleep, wifi
+  // change, NAT/edge idle reset) the TCP socket dies with no FIN, `onerror`
+  // never fires, readyState stays OPEN, and the tab renders frozen state
+  // forever while believing it is connected. A NAMED event is visible to the
+  // client, which lets it run a staleness watchdog. See client/sse-client.ts.
   const hb = setInterval(() => {
-    try { res.write(': ping\n\n') } catch { _cleanup(res) }
+    try { res.write(`event: hb\ndata: ${Date.now()}\n\n`) } catch { _cleanup(res) }
   }, 15000)
   _heartbeats.set(res, hb)
 

@@ -4,6 +4,7 @@ import { pollSleep } from './performance.js'
 import { bus } from '../bus.js'
 import type { OHLCBar } from '../types.js'
 import { loadSettings as ioLoadSettings, saveSettings as ioSaveSettings } from '../io/settings.js'
+import { guardSocket } from '../io/ws-guard.js'
 
 // ── IO imports ────────────────────────────────────────────────────────────────
 
@@ -361,6 +362,9 @@ export async function runStreamChainlink(signal: AbortSignal): Promise<void> {
     try {
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(CL_RTDS_URL)
+        // Half-open sockets never fire close/error, which would hang this loop
+        // forever. Ping/pong probe terminates a dead peer so the loop reconnects.
+        guardSocket(ws, { label: 'chainlink', staleMs: 45000 })
 
         ws.on('open', () => {
           ws.send(clSubscribeMsg!())

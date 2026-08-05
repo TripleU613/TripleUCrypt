@@ -23,6 +23,10 @@ export function getBroker(): BrokerLike | null {
   return (bankingGetBroker(state.practice ?? true) as unknown as BrokerLike | null) ?? null
 }
 
+/** Most recent fills kept in `state.orders` (a UI display buffer, and part of
+ *  every SSE snapshot — so it must not grow unbounded over a long session). */
+const ORDERS_MAX = 50
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 export function initState(s: AppState): void {
@@ -329,7 +333,15 @@ export async function runBuy(direction: string): Promise<void> {
         ref: fill.order_id,
       })
       notify(`${tag}Bought ${fill.shares.toFixed(2)} ${direction} @ ${fill.price}¢`, 'log')
-      patch('orders', [fill as unknown as Record<string, unknown>, ...(state.orders ?? [])])
+      // Cap the in-memory order list. This is a display buffer, and it used to
+      // grow without limit for the life of the process -- and it ships inside
+      // EVERY SSE snapshot, so an all-day session made each reconnect resend a
+      // steadily larger payload. Durable history lives in the trade-audit log
+      // (io/trade-audit.ts), not here.
+      patch('orders', [
+        fill as unknown as Record<string, unknown>,
+        ...(state.orders ?? []),
+      ].slice(0, ORDERS_MAX))
       // Record the window this token belongs to so it settles on close. Use the
       // snapshot taken BEFORE the order (FIX E), not windows[0] at toast time —
       // the window may have rolled over while the order was in flight.

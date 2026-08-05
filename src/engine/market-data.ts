@@ -2,6 +2,7 @@ import { patch, sleep } from './state.js'
 import type { AppState } from './state.js'
 import { bus } from '../bus.js'
 import WebSocket from 'ws'
+import { guardSocket } from '../io/ws-guard.js'
 
 // ── IO imports ────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,9 @@ export async function runStreamKraken(signal: AbortSignal): Promise<void> {
     try {
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(KRAKEN_WS_URL)
+        // Half-open sockets never fire close/error, which would hang this loop
+        // forever. Ping/pong probe terminates a dead peer so the loop reconnects.
+        guardSocket(ws, { label: 'kraken', staleMs: 45000 })
 
         ws.on('open', () => {
           for (const sub of _kraken!.wsSubscriptions()) {
