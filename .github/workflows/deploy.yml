@@ -23,6 +23,8 @@ name: Deploy to server
 # /opt/tripleucrypt/secrets.env on the host (`tuc-secrets`), so a wallet key
 # never passes through GitHub.
 
+permissions: {}   # needs no GitHub token scope; it only opens an SSH connection
+
 on:
   push:
     branches: [main]

@@ -9,6 +9,9 @@ name: CI
 #      exercise Vite's bundling (asset resolution, plugin/polyfill config), so
 #      without this a build-breaking change passes CI and only fails later in the
 #      GHCR image build or the production deploy. Cheap; closes that gap.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]

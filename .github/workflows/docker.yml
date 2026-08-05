@@ -1,6 +1,9 @@
 name: Build Docker Image
 
 # One image per build → pushed to GitHub Container Registry (GHCR).
+permissions:
+  contents: read   # job-level adds packages:write only where needed
+
 on:
   push:
     branches: [main]

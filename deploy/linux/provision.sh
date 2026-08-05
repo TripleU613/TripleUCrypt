@@ -63,7 +63,7 @@ log "firewall (ssh only; tunnel is outbound)"
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
-ufw allow 22/tcp >/dev/null
+ufw limit 22/tcp comment 'ssh rate-limited' >/dev/null
 ufw --force enable >/dev/null
 
 log "ssh hardening (keys only)"
@@ -71,8 +71,29 @@ cat > /etc/ssh/sshd_config.d/99-tuc.conf <<'CONF'
 PasswordAuthentication no
 PermitRootLogin prohibit-password
 KbdInteractiveAuthentication no
+MaxAuthTries 3
+LoginGraceTime 20
+AllowTcpForwarding no
+X11Forwarding no
 CONF
-systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+sshd -t && { systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true; }
+
+log "fail2ban (port 22 is reachable from the internet, so ban brute-forcers)"
+apt-get install -y -qq fail2ban >/dev/null
+cat > /etc/fail2ban/jail.d/sshd.local <<'CONF'
+[sshd]
+enabled  = true
+backend  = systemd
+mode     = aggressive
+maxretry = 4
+findtime = 10m
+bantime  = 24h
+# Escalate repeat offenders: each re-offence multiplies the ban.
+bantime.increment = true
+bantime.factor    = 4
+bantime.maxtime   = 30d
+CONF
+systemctl enable --now fail2ban >/dev/null 2>&1 || true
 
 log "unattended security upgrades"
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'CONF'
