@@ -298,6 +298,81 @@ UNIT
 systemctl daemon-reload
 systemctl enable tripleucrypt.service >/dev/null 2>&1
 
+log "telemetry sampler (answers 'is it stable over weeks' with a trend, not one reading)"
+cat > /usr/local/bin/tuc-sample <<'SAMPLE_EOF'
+#!/usr/bin/env bash
+# One line of health+resource telemetry, appended every 15 min by a systemd timer.
+# Exists so "is it stable over 5 weeks?" is answered with a trend instead of a
+# single reading. Cheap: one docker inspect + one /health call.
+set -uo pipefail
+OUT=/var/log/tuc-samples.jsonl
+TS=$(date -u +%FT%TZ)
+MEM=$(docker stats --no-stream --format '{{.MemUsage}}' tripleucrypt 2>/dev/null | awk '{print $1}')
+CPU=$(docker stats --no-stream --format '{{.CPUPerc}}' tripleucrypt 2>/dev/null | tr -d '%')
+UP=$(docker inspect -f '{{.State.StartedAt}}' tripleucrypt 2>/dev/null)
+RESTARTS=$(docker inspect -f '{{.RestartCount}}' tripleucrypt 2>/dev/null)
+H=$(docker exec tripleucrypt curl -fsS --max-time 5 http://localhost:8200/health 2>/dev/null)
+OK=$(echo "$H" | jq -r '.ok // "null"' 2>/dev/null)
+DEG=$(echo "$H" | jq -r '.degraded // "null"' 2>/dev/null)
+LOOPRS=$(echo "$H" | jq -r '[.tasks[]?.restarts] | add // 0' 2>/dev/null)
+HOSTMEM=$(free -m | awk 'NR==2{print $3}')
+printf '{"ts":"%s","mem":"%s","cpu":"%s","started":"%s","c_restarts":%s,"ok":%s,"degraded":%s,"loop_restarts":%s,"host_mem_mb":%s}\n' \
+  "$TS" "${MEM:-?}" "${CPU:-?}" "${UP:-?}" "${RESTARTS:-0}" "${OK:-null}" "${DEG:-null}" "${LOOPRS:-0}" "${HOSTMEM:-0}" >> "$OUT"
+SAMPLE_EOF
+
+cat > /usr/local/bin/tuc-trend <<'TREND_EOF'
+#!/usr/bin/env bash
+# Summarise the telemetry samples: is memory creeping, is anything restarting?
+F=/var/log/tuc-samples.jsonl
+[ -s "$F" ] || { echo "no samples yet (timer runs every 15 min)"; exit 0; }
+echo "samples: $(wc -l < "$F")  window: $(head -1 "$F" | jq -r .ts) -> $(tail -1 "$F" | jq -r .ts)"
+echo
+jq -rs '
+  map(.mem_mb = (.mem | sub("MiB";"") | tonumber? // 0)) |
+  "container memory MiB   first=\(.[0].mem_mb)  last=\(.[-1].mem_mb)  min=\(map(.mem_mb)|min)  max=\(map(.mem_mb)|max)",
+  "container restarts     \(.[-1].c_restarts)",
+  "background loop restarts (cumulative)  \(.[-1].loop_restarts)",
+  "health ok=false samples  \([.[] | select(.ok != true)] | length)",
+  "degraded samples         \([.[] | select(.degraded == true)] | length)"
+' "$F"
+echo
+echo "last 5 samples:"; tail -5 "$F" | jq -c '{ts,mem,cpu,ok,loop_restarts}'
+TREND_EOF
+
+chmod 0755 /usr/local/bin/tuc-sample /usr/local/bin/tuc-trend
+
+cat > /etc/systemd/system/tuc-sample.service <<'UNIT'
+[Unit]
+Description=Sample TripleUCrypt health/resource telemetry
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tuc-sample
+UNIT
+
+cat > /etc/systemd/system/tuc-sample.timer <<'UNIT'
+[Unit]
+Description=Sample TripleUCrypt telemetry every 15 minutes
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+
+cat > /etc/logrotate.d/tuc-samples <<'CONF'
+/var/log/tuc-samples.jsonl {
+  weekly
+  rotate 8
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+CONF
+systemctl daemon-reload
+systemctl enable --now tuc-sample.timer >/dev/null 2>&1 || true
+
 log "provisioning complete"
 echo
 echo "deploy public key (register read-only on the repo):"

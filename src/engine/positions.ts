@@ -5,6 +5,7 @@ import type { Fill } from '../types.js'
 import { getBroker as bankingGetBroker, slippageFloorCents } from '../banking/index.js'
 import { notify } from './notify.js'
 import { recordTrade } from '../io/trade-audit.js'
+import { reconcileReduction, describeReductionMismatch } from './reconcile.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -113,6 +114,48 @@ type BrokerLike = {
   claimWinnings(posIds: string[]): Promise<{ ok: boolean; claimed: number; errors: string[]; refs?: string[] }>
 }
 
+/**
+ * Confirm a reported live SELL actually reduced the holding.
+ *
+ * Detached and non-throwing — the sell already happened; this only decides what
+ * we tell the user and what we record. A false "you're out" is the dangerous
+ * direction here, so a failure is reported as an error, not a warning.
+ */
+async function _verifySold(
+  broker: BrokerLike,
+  tokenId: string,
+  heldBefore: number,
+  sold: number,
+): Promise<void> {
+  try {
+    const outcome = await reconcileReduction({
+      heldBefore,
+      sold,
+      readHeld: async () => {
+        const rows = await broker.getPositions()
+        const row = rows.find(r => (r['token'] as string) === tokenId)
+        return row ? Number(row['shares'] ?? 0) : 0
+      },
+    })
+    if (outcome.ok) return
+
+    const msg = describeReductionMismatch(outcome)
+    console.error(`[reconcile] SELL ${tokenId.slice(0, 12)} ${msg}`)
+    notify(msg, 'error')
+    recordTrade({
+      action: 'sell',
+      mode: 'live',
+      asset: String(state.chart_asset ?? '?'),
+      token: tokenId,
+      shares: sold,
+      unreconciled: true,
+      observed_shares: outcome.observed ?? 0,
+    })
+  } catch (e) {
+    console.warn('[reconcile] sell check errored (sell itself unaffected):', e instanceof Error ? e.message : e)
+  }
+}
+
 function _getBroker(): BrokerLike | null {
   // Mode-aware: practice → paper; live → real broker only if configured.
   return (bankingGetBroker(state.practice ?? true) as unknown as BrokerLike | null) ?? null
@@ -186,6 +229,12 @@ export async function runSell(tokenId: string, amount: number): Promise<void> {
   const filtered = before.filter(p => (p['token'] as string) !== tokenId)
   patch('positions', filtered)
 
+  // Baseline for the post-sell reconcile (see _verifySold). Taken from the same
+  // snapshot the optimistic removal uses, so it costs nothing extra.
+  const heldBefore = Number(
+    (before.find(p => (p['token'] as string) === tokenId)?.['shares']) ?? 0,
+  )
+
   try {
     const fill = await broker.sell(tokenId, amount, minPriceCents ?? undefined)
     if (fill.unconfirmed) {
@@ -222,6 +271,13 @@ export async function runSell(tokenId: string, amount: number): Promise<void> {
       patch('status', msg)
       patch('status_ok', true)
       notify(msg, 'log')
+      // LIVE ONLY: confirm the shares actually left. A sell that reports filled
+      // but leaves the position in place is worse than the buy equivalent — the
+      // user believes they are out and stop watching, while still exposed into
+      // resolution.
+      if (!state.practice && heldBefore > 0) {
+        void _verifySold(broker, tokenId, heldBefore, fill.shares)
+      }
     }
   } catch (e: unknown) {
     _recentlySold.delete(tokenId)

@@ -102,11 +102,76 @@ export async function reconcileHolding(opts: ReconcileOptions): Promise<Reconcil
   }
 }
 
-/** Human-readable explanation for a failed reconcile. Kept here so the wording
- *  is consistent between the toast and the audit record. */
+/** Human-readable explanation for a failed BUY reconcile. Kept here so the
+ *  wording is consistent between the toast and the audit record. */
 export function describeMismatch(o: ReconcileOutcome): string {
   if (o.unreadable) {
     return `Filled, but the position could not be verified (positions unreadable). Check Polymarket before trading again.`
   }
   return `Filled ${o.expected.toFixed(2)} shares but only ${(o.observed ?? 0).toFixed(2)} confirmed. Check Polymarket before trading again.`
+}
+
+// ── Sell side ────────────────────────────────────────────────────────────────
+
+export interface ReduceOptions {
+  readHeld: () => Promise<number | null>
+  /** Holding immediately BEFORE the sell. */
+  heldBefore: number
+  /** Shares the sell claimed to move. */
+  sold: number
+  delaysMs?: number[]
+  sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * Confirm a reported SELL actually reduced the holding.
+ *
+ * The mirror of the buy case, and it fails differently: a sell that reports
+ * filled but leaves the shares in place means the user believes they cashed out
+ * and are no longer exposed, while in fact they still hold the position into
+ * resolution. Being wrong about that is worse than being wrong about a buy.
+ *
+ * Differential rather than absolute here: `heldBefore` is already read by
+ * BrokerAdapter.sell()'s freshness clamp, so no extra latency is introduced.
+ */
+export async function reconcileReduction(opts: ReduceOptions): Promise<ReconcileOutcome> {
+  const delays = opts.delaysMs ?? DEFAULT_DELAYS
+  const sleep = opts.sleep ?? realSleep
+  // What the holding should be at MOST once the sale settles.
+  const target = Math.max(0, opts.heldBefore - opts.sold)
+
+  if (!(opts.sold > 0)) {
+    return { ok: true, expected: target, observed: null, attempts: 0, unreadable: false }
+  }
+
+  let best: number | null = null
+  let attempts = 0
+
+  for (let i = 0; i < delays.length; i++) {
+    await sleep(delays[i] as number)
+    attempts++
+
+    let held: number | null = null
+    try {
+      held = await opts.readHeld()
+    } catch {
+      held = null
+    }
+
+    // Track the LOWEST holding seen — for a reduction, lower is closer to right.
+    if (held != null && (best == null || held < best)) best = held
+    if (held != null && held <= target + EPS) {
+      return { ok: true, expected: target, observed: held, attempts, unreadable: false }
+    }
+  }
+
+  return { ok: false, expected: target, observed: best, attempts, unreadable: best == null }
+}
+
+/** Human-readable explanation for a failed SELL reconcile. */
+export function describeReductionMismatch(o: ReconcileOutcome): string {
+  if (o.unreadable) {
+    return `Sell reported, but the position could not be verified (positions unreadable). Check Polymarket — you may still be holding.`
+  }
+  return `Sell reported, but ${(o.observed ?? 0).toFixed(2)} shares are still held (expected ${o.expected.toFixed(2)}). You may still be exposed — check Polymarket.`
 }

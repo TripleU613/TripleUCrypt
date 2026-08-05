@@ -16,6 +16,7 @@ import type { SwapToken } from "./swap.js";
 import type { WalletInfo, Portfolio, Position, Stats, Quote, Fill, OrderResult } from "./models.js";
 import {
   NATIVE_USDC, USDC_E, POLYGON_RPC, CLOB_HOST, RELAYER_URL, POLYGON_CHAIN_ID,
+  CTF_EXCHANGE,
   DEFAULT_TICK, MIN_ORDER_USD, MIN_SHARES,
 } from "./models.js";
 import { withRetries, shortError } from "./resilience.js";
@@ -471,6 +472,57 @@ export class LiveBroker implements Broker {
     } catch (e) {
       console.warn("ensureReady() error:", shortError(e));
       return { ok: false, error: shortError(e), detail: "" };
+    }
+  }
+
+  /**
+   * READ-ONLY tradeability preflight. Answers "would an order actually settle?"
+   * without signing anything or spending gas.
+   *
+   * Without this a live buy from an unapproved EOA got signed and posted, and
+   * only failed at settlement — indistinguishable, to the user, from the app
+   * being broken. ensureReady() cannot serve this purpose: it BROADCASTS the
+   * approvals (real gas, and gated), so it must stay an explicit user action.
+   *
+   * Only the CTF Exchange is required, because these are binary markets
+   * (verified: the up/down windows report neg_risk=false). Demanding the
+   * neg-risk spenders too would refuse trades that would have settled fine.
+   *
+   * Cached once satisfied — an approval is not spontaneously revoked, so the
+   * on-chain read is paid at most once per process and never sits in the hot
+   * path of a 1-tap buy.
+   */
+  private _tradeableOk = false;
+  async checkTradeable(): Promise<OrderResult> {
+    if (this._tradeableOk) return { ok: true, error: "", detail: "cached" };
+    if (!isConfigured()) return { ok: false, error: "Not configured", detail: "" };
+    const src = _keySource();
+    // .env proxy path: collateral allowance is CLOB/relayer-managed, not an EOA
+    // approval we can read this way. Nothing to assert here.
+    if (src?.source !== "local") {
+      this._tradeableOk = true;
+      return { ok: true, error: "", detail: "proxy path" };
+    }
+    try {
+      const { allowanceStatus } = await import("./eoa-allowance.js");
+      const st = await allowanceStatus(src.address);
+      const exch = getAddress(CTF_EXCHANGE);
+      const eq = (a: string) => getAddress(a) === exch;
+      const missing = st.missing_erc20.some(eq) || st.missing_ctf.some(eq);
+      if (missing) {
+        return {
+          ok: false,
+          error: "Trading not approved yet — open Wallet and click Enable trading",
+          detail: "",
+        };
+      }
+      this._tradeableOk = true;
+      return { ok: true, error: "", detail: "approved" };
+    } catch (e) {
+      // A failed READ must never block a trade that would have worked. Report
+      // ok and let the order path surface any real problem itself.
+      console.warn("checkTradeable() read failed (allowing trade):", shortError(e));
+      return { ok: true, error: "", detail: "unverified" };
     }
   }
 

@@ -53,6 +53,8 @@ ssh root@<host> 'tuc-deploy'              # clone, build, start, wait for health
 | `tuc-logs [n]` | follow logs |
 | `tuc-tunnel [token]` | provision the Cloudflare Tunnel token and start `cloudflared` |
 | `tuc-secrets` | edit live-trading creds in `$EDITOR`, then restart |
+| `tuc-trend` | memory/restart/health trend from the 15-min telemetry samples |
+| `tuc-sample` | take one telemetry sample now (a systemd timer does this every 15 min) |
 
 ## Networking
 
@@ -97,3 +99,21 @@ ssh root@<host> 'docker run --rm -v tripleucrypt_tuc_data:/d -v /tmp:/b alpine \
   tar czf /b/tuc-data.tgz -C /d .'
 scp root@<host>:/tmp/tuc-data.tgz .
 ```
+
+## Telemetry
+
+A systemd timer appends one JSON line to `/var/log/tuc-samples.jsonl` every 15
+minutes: container memory, CPU, restart count, `/health`, and cumulative
+background-loop restarts. Rotated weekly, 8 kept.
+
+It exists so "is this stable over weeks?" is answered from a **trend** rather than
+a single reading:
+
+```bash
+ssh root@<host> 'tuc-trend'
+```
+
+Flat memory with a restart count of 0 is the healthy shape. A handful of
+background-loop restarts is fine — that is the supervisor recovering a dropped
+upstream, i.e. the system working. A continuously climbing count, or climbing
+memory, is worth chasing.

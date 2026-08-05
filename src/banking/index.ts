@@ -36,6 +36,8 @@ export interface EngineBroker {
   claimWinnings(posIds: string[]): Promise<{ ok: boolean; claimed: number; errors: string[]; refs: string[] }>
   // ── wallet / money management (forwarded to the underlying broker) ──────────
   ensureReady(): Promise<OrderResult>
+  /** Read-only tradeability preflight (live only; absent on PaperBroker). */
+  checkTradeable?(): Promise<OrderResult>
   send(usdc: number, to: string): Promise<OrderResult>
   txHistory(limit?: number): Promise<Record<string, unknown>[]>
   swap(from: string, to: string, amount: number): Promise<OrderResult>
@@ -172,6 +174,12 @@ export class BrokerAdapter implements EngineBroker {
   }
 
   ensureReady(): Promise<OrderResult> { return this.b.ensureReady() }
+  /** Read-only tradeability preflight. PaperBroker has none, so default to ok. */
+  async checkTradeable(): Promise<OrderResult> {
+    const b = this.b as Partial<{ checkTradeable(): Promise<OrderResult> }>
+    if (typeof b.checkTradeable !== 'function') return { ok: true, error: '', detail: 'n/a' }
+    return b.checkTradeable()
+  }
   send(usdc: number, to: string): Promise<OrderResult> { return this.b.send(usdc, to) }
   txHistory(limit?: number): Promise<Record<string, unknown>[]> { return this.b.txHistory(limit) }
   swap(from: string, to: string, amount: number): Promise<OrderResult> { return this.b.swap(from, to, amount) }

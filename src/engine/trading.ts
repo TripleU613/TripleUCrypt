@@ -16,6 +16,8 @@ type BrokerLike = {
   buy(direction: string, size: number, tokenId: string, limitPrice?: number, mode?: string): Promise<Fill>
   sell(tokenId: string, amount: number): Promise<Fill>
   claimWinnings(posIds: string[]): Promise<unknown>
+  /** Read-only tradeability preflight (approvals). Absent on PaperBroker. */
+  checkTradeable?(): Promise<{ ok: boolean; error: string }>
 }
 
 export function getBroker(): BrokerLike | null {
@@ -333,6 +335,17 @@ export async function runBuy(direction: string): Promise<void> {
     if (Number.isFinite(cash) && cash > 0 && size > cash + 1e-9) {
       notify(`Not enough USDC — $${size.toFixed(2)} order, $${cash.toFixed(2)} available`, 'warn')
       return
+    }
+    // Approvals: an unapproved EOA signs and posts fine, then fails at
+    // settlement — which looks like a broken app rather than a missing one-time
+    // approval. This read is cached after the first success, so it never sits in
+    // the hot path of a 1-tap buy, and a failed READ never blocks a trade.
+    if (typeof broker.checkTradeable === 'function') {
+      const ready = await broker.checkTradeable()
+      if (!ready.ok) {
+        notify(ready.error || 'Trading not approved yet', 'error')
+        return
+      }
     }
   }
 
