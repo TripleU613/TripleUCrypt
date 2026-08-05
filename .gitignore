@@ -1,0 +1,42 @@
+*.db
+assets/external/
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# Wildcards, NOT an exact-filename allowlist: any variant (.env.production,
+# .env.staging, .env.test, …) must be ignored by default rather than requiring
+# an edit here first. Only the committed examples are negated back in.
+.env*
+!.env.example
+deploy/.env*
+!deploy/.env.example
+*secrets.env
+
+# Generated trading-wallet key files — NEVER commit. Globbed so backups/variants
+# (trading_wallet.json.bak, trading_wallet2.keystore.json, …) are caught too.
+# Covers a custom TC_DATA_DIR pointed inside the repo; the default
+# ~/.triplecrypt lives outside it and is ignored below anyway.
+trading_wallet*
+*.keystore.json
+
+# Local app state / paper ledger / session memory
+.triplecrypt/
+.states/
+.remember/
+_incoming/
+
+# NOTE: package.json + package-lock.json ARE the real manifests (TS app) and
+# MUST be tracked — npm ci (CI + deploy/windows/install.ps1) needs them.
+
+# Node / TypeScript build + tooling
+node_modules/
+dist/
+# Server-side deploy artifacts (rollback snapshot + kept-for-post-mortem build)
+dist.bak/
+dist.broken/
+.vite/
+*.tsbuildinfo
+*.log
+
+# Claude Code agent worktrees + local session data
+.claude/worktrees/
+.claude/projects/

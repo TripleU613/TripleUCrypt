@@ -1,0 +1,85 @@
+name: CI
+
+# Three checks on every push/PR:
+#   1. typecheck — tsc --noEmit on both server and client tsconfigs; catches type
+#      errors without emitting output.
+#   2. test — npm ci + vitest run (unit tests), ensuring no broken dependency
+#      pins land on main.
+#   3. build — the real `npm run build` (tsc + vite bundle). tsc --noEmit does NOT
+#      exercise Vite's bundling (asset resolution, plugin/polyfill config), so
+#      without this a build-breaking change passes CI and only fails later in the
+#      GHCR image build or the production deploy. Cheap; closes that gap.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: Type-check (Node 20 & 22)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check server
+        run: npx tsc -p tsconfig.server.json --noEmit
+      - name: Type-check client
+        run: npx tsc -p tsconfig.client.json --noEmit
+
+  test:
+    name: Unit tests (Node 20 & 22)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npx vitest run
+
+  # Catch a committed key/token before it lands. This repo handles real wallet
+  # private keys and API secrets, so a leaked .env or a key pasted into a test
+  # fixture must fail the PR rather than rely on someone spotting it in review.
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # gitleaks scans history, not just the tip
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  build:
+    name: Production build (Node 20 & 22)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build (tsc server + vite client bundle)
+        run: npm run build

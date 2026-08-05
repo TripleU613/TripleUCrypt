@@ -1,0 +1,42 @@
+# gitleaks config for TripleUCrypt (see .github/workflows/ci.yml → "Secret scan")
+#
+# Starts from gitleaks' bundled rules, then adds a rule for the thing that would
+# actually hurt here: a real wallet private key or Polymarket/relayer secret
+# assigned in a committed file.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "tuc-wallet-private-key"
+description = "Wallet private key (0x + 64 hex) assigned to a POLY_*/private_key-shaped name"
+regex = '''(?i)(poly_private_key|private_key|privatekey)\s*[:=]\s*['"]?(0x)?[0-9a-f]{64}['"]?'''
+tags = ["key", "wallet", "critical"]
+
+[[rules]]
+id = "tuc-polymarket-api-secret"
+description = "Polymarket CLOB L2 / builder-relayer credential assigned a real-looking value"
+regex = '''(?i)(poly_api_secret|poly_api_passphrase|builder_api_secret|builder_api_passphrase)\s*[:=]\s*['"]?[A-Za-z0-9+/=_-]{16,}['"]?'''
+tags = ["key", "api", "critical"]
+
+[allowlist]
+description = "Documented placeholders and public test vectors — not real secrets"
+
+paths = [
+  # Placeholder-only by design; the committed examples must stay readable.
+  '''^\.env\.example$''',
+  '''^deploy/\.env\.example$''',
+  # This config's own regexes look like the thing they match.
+  '''^\.gitleaks\.toml$''',
+]
+
+regexes = [
+  # Hardhat/Anvil default account #0 — a publicly published test key used in
+  # tests/banking/*.test.ts to assert address derivation. Holds nothing.
+  '''0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80''',
+  '''0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266''',
+  # Placeholder spellings used throughout the docs/examples.
+  '''0x_your''',
+  '''your_[a-z_]*(key|secret|passphrase)''',
+  '''paste-your''',
+]

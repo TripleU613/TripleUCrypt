@@ -1,0 +1,3 @@
+# This app is a private, authenticated trading terminal - not a public site.
+User-agent: *
+Disallow: /

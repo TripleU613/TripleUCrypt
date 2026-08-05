@@ -1,0 +1,80 @@
+services:
+  tripleucrypt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tripleucrypt:latest
+    container_name: tripleucrypt
+
+    ports:
+      - "8200:8200"   # Web UI + backend API + SSE state stream — one Express server, single port
+
+    # Load credentials from .env file (copy .env.example → .env and fill in).
+    # Optional: without it the app runs in practice/read-only mode.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Must match the mounted volume below — this is where the practice-mode
+      # ledger and (if generated) the local trading wallet key persist. Without
+      # this, the app falls back to ~/.triplecrypt inside the container, which
+      # is NOT the mounted volume, so data would silently not survive a recreate.
+      - TC_DATA_DIR=/app/data
+
+    volumes:
+      # Persistent paper-trading ledger + generated trading wallet (see TC_DATA_DIR above)
+      - tripleucrypt_data:/app/data
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8200/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+    # Resource limits — adjust for your machine
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 512M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: nginx reverse proxy (uncomment to run on port 80/443)
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  #     - ./ssl:/etc/nginx/ssl:ro
+  #   depends_on:
+  #     - tripleucrypt
+  #   restart: unless-stopped
+
+volumes:
+  tripleucrypt_data:
+    driver: local
+
+# ─── NVIDIA GPU support ────────────────────────────────────────────────────────
+# Uncomment the following to enable nvidia-smi GPU monitoring.
+# Requires nvidia-container-toolkit installed on the host.
+# Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# services:
+#   tripleucrypt:
+#     runtime: nvidia
+#     environment:
+#       - NVIDIA_VISIBLE_DEVICES=all
+#       - NVIDIA_DRIVER_CAPABILITIES=utility

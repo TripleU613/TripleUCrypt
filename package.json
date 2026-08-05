@@ -1,0 +1,63 @@
+{
+  "name": "tripleu-crypt",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "description": "Real-time crypto up/down trading terminal for Polymarket — live charts, order book, one-click buy/sell across BTC/ETH/SOL/XRP/DOGE/HYPE/BNB 5m and 15m windows.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TripleU613/TripleUCrypt.git"
+  },
+  "homepage": "https://github.com/TripleU613/TripleUCrypt#readme",
+  "bugs": {
+    "url": "https://github.com/TripleU613/TripleUCrypt/issues"
+  },
+  "keywords": [
+    "polymarket",
+    "prediction-markets",
+    "trading-terminal",
+    "crypto",
+    "clob"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently \"tsx watch src/server/index.ts\" \"vite\"",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "start": "node dist/server/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@number-flow/react": "^0.6.0",
+    "@polymarket/clob-client-v2": "^1.0.8",
+    "animejs": "^4.5.0",
+    "buffer": "^6.0.3",
+    "embla-carousel-react": "^8.6.0",
+    "ethers": "^5.8.0",
+    "express": "^4.18.2",
+    "process": "^0.11.10",
+    "systeminformation": "^5.21.0",
+    "undici": "^6.6.2",
+    "viem": "^2.7.0",
+    "ws": "^8.16.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.5",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "@types/ws": "^8.5.10",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12",
+    "vite-plugin-node-polyfills": "^0.28.0",
+    "vitest": "^1.2.1"
+  }
+}

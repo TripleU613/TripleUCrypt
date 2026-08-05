@@ -1,0 +1,48 @@
+# TripleUCrypt — public deployment behind Cloudflare Tunnel + Cloudflare Access.
+# Pulls the published image (no local build) and exposes nothing on the host —
+# Cloudflare reaches it through the tunnel. The app is domain-agnostic (the
+# client calls same-origin relative paths, no build-time URL to bake in), so
+# this works behind any hostname you route to it with no image rebuild. Used
+# for a manual `./up.sh`; the maintainer's own production box deploys natively
+# instead (no Docker) — see .github/workflows/deploy.yml and ../DEPLOY.md.
+
+services:
+  app:
+    image: ghcr.io/tripleu613/tripleucrypt:latest
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      # Must match the volume below — where the practice-mode ledger and (if
+      # generated) the local trading wallet key persist across updates/restarts.
+      - TC_DATA_DIR=/app/data
+    env_file:
+      # Money creds (POLY_PRIVATE_KEY + POLY_WALLET_ADDRESS) — provisioned on the
+      # server (by the CD workflow from GitHub secrets, or by hand). Optional:
+      # without it the app runs in practice mode. Git-ignored, never committed.
+      - path: secrets.env
+        required: false
+    # Runs the image's own CMD (node dist/server/index.js).
+    volumes:
+      - tripleucrypt_data:/app/data
+    expose:
+      - "8200"            # internal only — never published to the host
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8200/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  cloudflared:
+    image: cloudflare/cloudflared:2024.10.0   # pinned for stability
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in deploy/.env}
+    depends_on:
+      app:
+        condition: service_healthy   # tunnel goes live only once the app is up
+
+volumes:
+  tripleucrypt_data:
+    driver: local

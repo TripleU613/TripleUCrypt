@@ -1,0 +1,64 @@
+name: Deploy to server
+
+# Continuous deploy to the Linux host (DigitalOcean droplet, tor1/Toronto).
+#
+# Replaces the previous self-hosted-Windows-runner deploy: that box is retired,
+# and its runner going offline left deploys queued forever rather than failing.
+# This runs on a GitHub-hosted runner and reaches the host over SSH.
+#
+# The host does the work: `tuc-deploy` pulls main via a read-only deploy key,
+# rebuilds, restarts, and waits for /health. See deploy/linux/README.md.
+#
+# The SSH key in DROPLET_SSH_KEY is pinned server-side to a FORCED COMMAND
+# (`command="/usr/local/bin/tuc-deploy"` in the host's authorized_keys), so it
+# cannot open a shell or forward ports even if it leaks. That is why this job
+# just opens a connection and does not pass a command.
+#
+# Secrets used (repo Settings -> Secrets -> Actions):
+#   DROPLET_HOST         host IP / DNS name
+#   DROPLET_SSH_KEY      private key whose public half is the forced-command entry
+#   DROPLET_KNOWN_HOSTS  ssh-keyscan output, so the host key is pinned not trusted
+#
+# Money credentials are NOT provisioned from CI. They live only in
+# /opt/tripleucrypt/secrets.env on the host (`tuc-secrets`), so a wallet key
+# never passes through GitHub.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false   # let a running deploy finish; don't kill it mid-build
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DROPLET_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy (pull, rebuild, restart, wait for health)
+        run: |
+          # No command argument: the host's forced command runs tuc-deploy, which
+          # exits non-zero if the app does not report healthy -- so a failed
+          # rollout fails this job.
+          ssh -i ~/.ssh/id_ed25519 \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=20 \
+              -o ConnectTimeout=15 \
+              root@${{ secrets.DROPLET_HOST }}
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error::Deploy failed. The previous container keeps running (restart: unless-stopped)"
+          echo "::error::and the previous image is still present, so the app should still be serving."
+          echo "::error::Inspect with: ssh root@<host> 'tuc-status' and 'tuc-logs'"
