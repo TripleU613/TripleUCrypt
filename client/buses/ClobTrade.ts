@@ -234,7 +234,7 @@ export async function browserBuy(address: string, tokenId: string, usd: number, 
  */
 export async function freshHeldSize(address: string, tokenId: string): Promise<{ size: number; resolved: boolean } | null> {
   try {
-    const r = await fetch(`https://data-api.polymarket.com/positions?user=${address}&sizeThreshold=0`)
+    const r = await fetch(`/data-api/positions?user=${address}&sizeThreshold=0`)
     const raw = await r.json() as DataApiPosition[] | { data?: DataApiPosition[] }
     const list = Array.isArray(raw) ? raw : (raw.data ?? [])
     const p = list.find(x => (x.asset ?? '') === tokenId)
@@ -401,7 +401,9 @@ function positionResolution(p: DataApiPosition): { resolved: boolean; redeemable
 
 // Read the wallet's POLYGON balances from a public RPC — independent of whatever
 // chain MetaMask is currently showing (so the top bar is correct even off-Polygon).
-const POLY_RPC = 'https://polygon-bor-rpc.publicnode.com'
+// Same-origin proxy (src/server/index.ts) rather than a public RPC directly: a
+// direct call leaked the visitor's IP and the wallet address in the calldata.
+const POLY_RPC = '/rpc'
 const T_NATIVE_USDC = '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359'
 const T_USDC_E = '0x2791bca1f2de4661ed88a30c99a7a9449aa84174'
 async function readPolygonBalances(addr: string): Promise<{ usdc: number; usdce: number; pol: number }> {
@@ -453,7 +455,7 @@ export async function refreshBrowserPortfolio(address: string): Promise<void> {
 
   // Positions — public data-api, no key. Map to the store's position shape.
   try {
-    const r = await fetch(`https://data-api.polymarket.com/positions?user=${address}&sizeThreshold=0.01`)
+    const r = await fetch(`/data-api/positions?user=${address}&sizeThreshold=0.01`)
     const raw = await r.json() as DataApiPosition[] | { data?: DataApiPosition[] }
     const list = Array.isArray(raw) ? raw : (raw.data ?? [])
     const positions = list

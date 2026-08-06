@@ -16,6 +16,7 @@ import { bumpGeneration, getSignal } from '../engine/session.js'
 import { sseHandler } from './sse.js'
 import { dispatch } from './actions.js'
 import { flushSettingsSync } from '../io/settings.js'
+import { POLYGON_RPC } from '../banking/models.js'
 
 const app = express()
 
@@ -45,7 +46,63 @@ app.use('/clob', express.raw({ type: () => true, limit: '2mb' }), async (req, re
   }
 })
 
+// Body parsing for everything below. Must stay AFTER the /clob raw handler (the
+// poly_signature HMAC covers the exact bytes, so the JSON parser must not touch
+// it) and BEFORE /rpc and /action, which both read req.body.
 app.use(express.json())
+
+// ── Polymarket data-api proxy ─────────────────────────────────────────────────
+// The browser used to call data-api.polymarket.com DIRECTLY for positions, which
+// meant every visitor handed Polymarket their IP *and* their wallet address (the
+// address is a query parameter). Proxying it keeps the browser talking only to
+// this origin. Read-only, no credentials involved.
+//
+// Allowlisted paths only: this must never become an open forwarder that anyone
+// on the internet can point at arbitrary hosts.
+const DATA_API_ALLOW = new Set(['/positions', '/activity', '/trades', '/holders', '/value'])
+app.get('/data-api/*', async (req, res) => {
+  try {
+    const path = req.path.replace(/^\/data-api/, '') || '/'
+    if (!DATA_API_ALLOW.has(path)) {
+      res.status(404).json({ ok: false, error: 'path not allowed' }); return
+    }
+    const qs = new URL(req.originalUrl, 'http://x').search
+    const r = await fetch(`https://data-api.polymarket.com${path}${qs}`, {
+      headers: { accept: 'application/json' },
+    })
+    const buf = Buffer.from(await r.arrayBuffer())
+    res.status(r.status)
+    const ct = r.headers.get('content-type'); if (ct) res.set('content-type', ct)
+    res.send(buf)
+  } catch (e) {
+    res.status(502).json({ ok: false, error: String(e instanceof Error ? e.message : e) })
+  }
+})
+
+// ── Polygon JSON-RPC proxy ────────────────────────────────────────────────────
+// Same reason: the browser read balances straight from a public RPC, leaking its
+// IP plus the wallet address in the call data. Restricted to the read-only
+// methods the UI actually needs -- never a general RPC relay, and it must never
+// forward anything that could broadcast a transaction (eth_sendRawTransaction).
+const RPC_ALLOW = new Set(['eth_call', 'eth_getBalance', 'eth_blockNumber', 'eth_chainId'])
+app.post('/rpc', async (req, res) => {
+  try {
+    const body = req.body as { method?: string } | undefined
+    const method = String(body?.method ?? '')
+    if (!RPC_ALLOW.has(method)) {
+      res.status(403).json({ ok: false, error: `rpc method not allowed: ${method}` }); return
+    }
+    const r = await fetch(POLYGON_RPC, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(req.body),
+    })
+    const buf = Buffer.from(await r.arrayBuffer())
+    res.status(r.status).set('content-type', 'application/json').send(buf)
+  } catch (e) {
+    res.status(502).json({ ok: false, error: String(e instanceof Error ? e.message : e) })
+  }
+})
 
 // ── Static files (Vite build output) ─────────────────────────────────────────
 
