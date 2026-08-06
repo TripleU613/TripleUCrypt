@@ -9,6 +9,7 @@ import { computePositionsLive, computeClaimablePositions, type ComputedPosition 
 import { placeBuy, placeSell } from '../lib/placeTrade.js'
 import { playFx } from '../lib/fx.js'
 import { useCountdown } from '../lib/useCountdown.js'
+import { intervalSecs } from '../lib/intervals.js'
 import { C, FONT, D, STR, SP, SZ, FS, FW } from '../constants/index.js'
 
 // ── Live ask value hook — one number, straight off the SSE-fed store ──────────
@@ -51,9 +52,10 @@ function LivePayout({ side, size, upToken, dnToken, color }:
 // ── Countdown timer (client-side) ─────────────────────────────────────────────
 
 function Countdown({ endTs, intervalS }: { endTs: number; intervalS: number }) {
-  const { secsLeft, stale, mm, ss } = useCountdown(endTs, intervalS)
+  // `text` (not mm:ss) so the hour-plus windows read h:mm:ss.
+  const { secsLeft, stale, text } = useCountdown(endTs, intervalS)
   if (stale) return <span style={{ color: 'var(--tc-dim)', fontFamily: FONT.TIME }}>—</span>
-  return <RollDigits text={`${mm}:${ss}`} style={{ color: secsLeft < 30 ? C.GOLD : 'var(--tc-white)', fontFamily: FONT.TIME, letterSpacing: '0.02em', fontVariantNumeric: 'tabular-nums' }} />
+  return <RollDigits text={text} style={{ color: secsLeft < 30 ? C.GOLD : 'var(--tc-white)', fontFamily: FONT.TIME, letterSpacing: '0.02em', fontVariantNumeric: 'tabular-nums' }} />
 }
 
 // ── FlipNumber ────────────────────────────────────────────────────────────────
@@ -621,7 +623,10 @@ function BuyPanel({ mobile = false }: { mobile?: boolean } = {}) {
   const dnToken = useStore(s => s.dn_token) as string
   const activeEndTs = useStore(s => s.active_end_ts) as number ?? 0
   const windows = (useStore(s => s.windows) ?? []) as Record<string, unknown>[]
-  const activeIntervalS = windows[0]?.['interval'] === '15m' ? 900 : 300
+  // The SELECTED window's length — the countdown/stale cutoff below is only
+  // right if it comes from the card being traded, not from windows[0].
+  const activeIdx = useStore(s => s.active_window) as number
+  const activeIntervalS = intervalSecs(windows[activeIdx]?.['interval'])
   const windowOpenPrice = useStore(s => s.window_open_price) as number ?? 0
   const chartAsset = useStore(s => s.chart_asset) as string ?? 'BTC'
   const chartPrice = useStore(s => s.cl_price) as number ?? 0

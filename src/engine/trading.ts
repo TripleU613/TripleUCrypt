@@ -6,6 +6,7 @@ import { getBroker as bankingGetBroker, recordBuyWindow, slippageCapCents } from
 import { notify } from './notify.js'
 import { recordTrade } from '../io/trade-audit.js'
 import { reconcileHolding, describeMismatch } from './reconcile.js'
+import { intervalSecs } from '../intervals.js'
 
 // ── Banking import ────────────────────────────────────────────────────────────
 
@@ -382,12 +383,15 @@ export async function runBuy(direction: string): Promise<void> {
       limitPrice = cap
     }
     // FIX E: snapshot the active window's identity BEFORE awaiting the order. If
-    // the window rolls over while the buy is in flight, windows[0] at toast time
+    // the window rolls over while the buy is in flight, the window at toast time
     // is the NEXT window — recording against it would settle/strand the position
     // on the wrong window. Capture end_ts/interval now and use them post-fill.
-    const wAtBuy = (state.windows ?? [])[0] as Record<string, unknown> | undefined
+    // Read the SELECTED window (the one this order's token came from), not
+    // windows[0] — with 1h/1d cards those differ, and the recorded end_ts is what
+    // settlement keys on.
+    const wAtBuy = (state.windows ?? [])[state.active_window ?? 0] as Record<string, unknown> | undefined
     const endTsAtBuy = Number(wAtBuy?.['end_ts'] ?? state.active_end_ts ?? 0)
-    const intervalSAtBuy = wAtBuy?.['interval'] === '15m' ? 900 : 300
+    const intervalSAtBuy = intervalSecs(wAtBuy?.['interval'])
     const fill = await broker.buy(direction, size, tokenId, limitPrice, mode)
 
     if (fill.unconfirmed) {

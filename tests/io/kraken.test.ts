@@ -3,7 +3,7 @@
  * Uses vitest with vi.mock for undici to avoid real HTTP calls.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ASSET_PAIRS, PRICE_SYMBOLS, wsSubscriptions, parseWsMessage } from "../../src/io/kraken.js";
+import { ASSET_PAIRS, PRICE_SYMBOLS, wsSubscriptions, parseWsMessage, rangeGranularityMins } from "../../src/io/kraken.js";
 
 // ── ASSET_PAIRS ───────────────────────────────────────────────────────────────
 
@@ -179,6 +179,27 @@ describe("parseWsMessage", () => {
       expect(btc5).toBeDefined();
       expect(eth5).toBeDefined();
       expect(btc15).toBeDefined();
+    }
+  });
+});
+
+// ── rangeGranularityMins ──────────────────────────────────────────────────────
+
+describe("rangeGranularityMins", () => {
+  it("keeps 1-minute bars for the short windows", () => {
+    expect(rangeGranularityMins(300)).toBe(1);      // 5m
+    expect(rangeGranularityMins(900)).toBe(1);      // 15m
+    expect(rangeGranularityMins(3600)).toBe(1);     // 1h → 60 bars
+  });
+
+  it("coarsens past an hour so a day isn't asked for as 1440 bars", () => {
+    expect(rangeGranularityMins(6 * 3600)).toBe(5);
+    expect(rangeGranularityMins(86400)).toBe(15);   // 1d → 96 bars
+  });
+
+  it("never asks for more bars than Kraken returns (~720)", () => {
+    for (const span of [300, 900, 3600, 6 * 3600, 86400]) {
+      expect(span / (rangeGranularityMins(span) * 60)).toBeLessThanOrEqual(720);
     }
   });
 });

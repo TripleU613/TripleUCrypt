@@ -136,6 +136,13 @@ vi.mock('../../src/engine/windows.js', () => ({
   computeWindowTimeStr: vi.fn(() => '4:30'),
   computeMarketsReady: vi.fn(() => false),
   computeTimeSlots: vi.fn(() => []),
+  // Needed by _setActiveWindow's effective-id routing. Previously absent because
+  // no test reached that branch with a slug that actually matched a window.
+  computeEffectiveCid: vi.fn((_slot: string, cid: string) => cid),
+  computeEffectiveSid: vi.fn((_slot: string, sid: string) => sid),
+  pickActiveWindow: vi.fn(() => ({ idx: 0 })),
+  runSetViewingSlot: vi.fn(() => Promise.resolve()),
+  runLoadProbHistory: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('../../src/engine/index.js', () => ({
@@ -150,6 +157,7 @@ vi.mock('../../src/bus.js', () => ({
 // ── Now import the module under test ─────────────────────────────────────────
 
 import { actions, dispatch } from '../../src/server/actions.js'
+import { state as mockState } from '../../src/engine/state.js'
 import * as chart from '../../src/engine/chart.js'
 import * as trading from '../../src/engine/trading.js'
 import * as positions from '../../src/engine/positions.js'
@@ -371,5 +379,32 @@ describe('actions dispatch table', () => {
     for (const name of expected) {
       expect(actions).toHaveProperty(name)
     }
+  })
+})
+
+// ── interval / active-window invariant ───────────────────────────────────────
+// state.interval must always describe the ACTIVE window. It is read by the slot
+// strip (which steps by it) while time-travel resolves against the active window,
+// so a split makes the two step by different amounts. Selecting any window — by
+// card click or by the timeframe pill — commits that window's interval.
+describe('interval follows the selected window', () => {
+  it('committing a 1h window sets state.interval to 1h', async () => {
+    ;(mockState as Record<string, unknown>)['windows'] = [
+      { slug: 'btc-updown-5m', interval: '5m', up_token: 'a', dn_token: 'b' },
+      { slug: 'btc-up-or-down-hourly', interval: '1h', up_token: 'c', dn_token: 'd' },
+    ]
+    ;(mockState as Record<string, unknown>)['interval'] = '5m'
+    await dispatch('set_active_window', ['btc-up-or-down-hourly'])
+    expect(chart.setChartInterval).toHaveBeenCalledWith('1h')
+  })
+
+  it('does not churn the interval when the selection is already at it', async () => {
+    ;(mockState as Record<string, unknown>)['windows'] = [
+      { slug: 'btc-updown-5m', interval: '5m', up_token: 'a', dn_token: 'b' },
+    ]
+    ;(mockState as Record<string, unknown>)['interval'] = '5m'
+    ;(chart.setChartInterval as unknown as { mockClear(): void }).mockClear()
+    await dispatch('set_active_window', ['btc-updown-5m'])
+    expect(chart.setChartInterval).not.toHaveBeenCalled()
   })
 })

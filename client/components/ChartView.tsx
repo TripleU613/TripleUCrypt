@@ -10,6 +10,7 @@ import { useStore } from '../store'
 import { EChart } from './chart/EChart'
 import { C, FONT, D, Z, SP, SZ, FS, FW, STR } from '../constants/index.js'
 import { call } from '../api.js'
+import { intervalSecs } from '../lib/intervals.js'
 
 // ── Icons (inline SVG so there's no icon library dependency) ─────────────────
 
@@ -267,9 +268,18 @@ function _windowLabel(kind: string, startTs: number, endTs: number): string {
     const h12 = h24 % 12 || 12
     return `${h12}:${mm}`
   }
-  const ap = parseInt(e.toLocaleString('en-US', { hour: '2-digit', hour12: false, timeZone: ET })) < 12 ? 'AM' : 'PM'
-  const mon = e.toLocaleString('en-US', { month: 'short', timeZone: ET })
-  const day = parseInt(e.toLocaleString('en-US', { day: 'numeric', timeZone: ET }))
+  const apOf = (d: Date) =>
+    parseInt(d.toLocaleString('en-US', { hour: '2-digit', hour12: false, timeZone: ET })) < 12 ? 'AM' : 'PM'
+  const monOf = (d: Date) => d.toLocaleString('en-US', { month: 'short', timeZone: ET })
+  const dayOf = (d: Date) => parseInt(d.toLocaleString('en-US', { day: 'numeric', timeZone: ET }))
+  const ap = apOf(e)
+  const mon = monOf(e)
+  const day = dayOf(e)
+  // A 1d window runs noon-to-noon ET, so one date + "12:00–12:00" would read as a
+  // zero-length window. Name both ends when the window crosses an ET day.
+  if (monOf(s) !== mon || dayOf(s) !== day) {
+    return `${kind} · ${monOf(s)} ${dayOf(s)} ${hm2(s)} ${apOf(s)} → ${mon} ${day} ${hm2(e)} ${ap} ET`
+  }
   return `${kind} · ${mon} ${day} · ${hm2(s)}–${hm2(e)} ${ap} ET`
 }
 
@@ -280,7 +290,7 @@ function useWindowTimeLabel(): string {
   const windows      = useStore((s) => s.windows) as Record<string, unknown>[]
   const chartAsset   = useStore((s) => s.chart_asset)
 
-  const span = interval === '15m' ? 15 * 60 : 5 * 60
+  const span = intervalSecs(interval)
 
   if (viewingSlot) {
     const vs = parseInt(viewingSlot, 10) || 0

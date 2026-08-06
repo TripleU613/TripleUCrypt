@@ -144,7 +144,12 @@ export function WindowNav({ onGripPointerDown, dragging = false, fluid = false }
   // fluid = mobile: always expanded, fills the full width (no hover, no cap).
   fluid?: boolean
 } = {}) {
-  const windows = useStore(s => s.windows)
+  const allWindows = useStore(s => s.windows)
+  const activeIdx = useStore(s => s.active_window)
+  // The slot strip walks the SELECTED window's boundaries — its interval is the
+  // step size, so feeding computeTimeSlots the whole array (whose [0] is always
+  // BTC 5m) would step a 1h/1d strip in five-minute slots.
+  const windows = allWindows[activeIdx] ? [allWindows[activeIdx]] : allWindows
   const slotOffset = useStore(s => s.slot_offset)
   const viewingSlot = useStore(s => s.viewing_slot)
   const slotResults = useStore(s => s.slot_results)

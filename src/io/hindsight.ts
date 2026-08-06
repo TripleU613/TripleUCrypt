@@ -3,7 +3,10 @@
  * Mirrors TripleUCrypt/io/hindsight.py exactly.
  */
 
-const _DAY_SECS = 24 * 60 * 60;
+import { intervalSecs } from "../intervals.js";
+
+/** How long a resolved window stays replayable AFTER it ends. */
+const _RETAIN_SECS = 24 * 60 * 60;
 
 /** Key: "asset:interval:start_ts" */
 const _STORE = new Map<string, unknown>();
@@ -12,14 +15,26 @@ function _key(asset: string, interval: string, startTs: number | string): string
   return `${asset}:${interval}:${Math.trunc(Number(startTs))}`;
 }
 
-/** Drop entries older than 24 hours. */
+/**
+ * Drop entries whose window ENDED more than _RETAIN_SECS ago.
+ *
+ * Retention is measured from the window's end, not its start. The key holds the
+ * START ts, so pruning on that directly meant a window was judged by when it
+ * OPENED — which is fine at 5m but fatal at 1d: a 1-day window starts 86400s
+ * before it ends, so a just-resolved daily window was already "older than 24h"
+ * and put() deleted it on the very call that inserted it. Daily hindsight replay
+ * could therefore never work.
+ */
 function _prune(now?: number): void {
-  const cutoff = (now ?? Math.trunc(Date.now() / 1000)) - _DAY_SECS;
+  const nowS = now ?? Math.trunc(Date.now() / 1000);
   for (const k of _STORE.keys()) {
     try {
       const parts = k.split(":");
-      const ts = parseInt(parts[parts.length - 1], 10);
-      if (ts < cutoff) {
+      const startTs = parseInt(parts[parts.length - 1], 10);
+      if (!Number.isFinite(startTs)) continue;
+      // parts = [asset, interval, startTs]
+      const endTs = startTs + intervalSecs(parts[1] ?? "");
+      if (endTs < nowS - _RETAIN_SECS) {
         _STORE.delete(k);
       }
     } catch {

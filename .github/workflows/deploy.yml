@@ -35,7 +35,29 @@ concurrency:
   cancel-in-progress: false   # let a running deploy finish; don't kill it mid-build
 
 jobs:
+  # Deploy must not outrun its own tests. deploy.yml has no dependency on ci.yml,
+  # and both are triggered by the same push -- so whichever gets a runner first
+  # wins. That has already happened in practice: a commit deployed to production
+  # while CI was still queued. This gate makes the tests a precondition rather
+  # than a race.
+  gate:
+    name: Test gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx tsc -p tsconfig.server.json --noEmit
+      - run: npx tsc -p tsconfig.client.json --noEmit
+      - run: npx vitest run
+      - run: npm run build
+
   deploy:
+    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

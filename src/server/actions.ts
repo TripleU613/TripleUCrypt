@@ -16,6 +16,7 @@ import * as orderBook from '../engine/order-book.js'
 import { reportFps } from '../engine/performance.js'
 import { notify } from '../engine/notify.js'
 import { recordTrade } from '../io/trade-audit.js'
+import { intervalSecs } from '../intervals.js'
 
 // ── windows.ts — event handlers ───────────────────────────────────────────────
 
@@ -25,6 +26,15 @@ async function _setActiveWindow(slug: string): Promise<void> {
   if (idx < 0) return
   patch('active_window', idx)
   const w = wins[idx] as Record<string, unknown>
+  // Selecting a window COMMITS its interval. Without this, clicking a 1h/1d card
+  // left state.interval at its old value, and the two were then used by different
+  // consumers — the slot strip steps by state.interval while time-travel resolves
+  // against the active window, so they stepped by different amounts. Slots are
+  // interval-relative, so a genuine change also resets time travel.
+  const wIv = String(w['interval'] ?? '')
+  if (wIv && wIv !== state.interval) {
+    chart.setChartInterval(wIv)
+  }
   patch('up_ask',        Number(w['up_ask'] ?? 0))
   patch('dn_ask',        Number(w['dn_ask'] ?? 0))
   patch('combined',      Number(w['combined'] ?? 0))
@@ -102,16 +112,16 @@ function _snapChartIfOffscreen(): void {
   const wins = state.windows ?? []
   if (!wins.length) return
 
-  const active = wins[0] as Record<string, unknown>
+  // The SELECTED window defines the visible slots (its interval is the step).
+  const active = (wins[state.active_window ?? 0] ?? wins[0]) as Record<string, unknown>
   const endTs = Number(active['end_ts'] ?? 0)
-  const interval = String(active['interval'] ?? '5m')
-  const intervalSecs = interval === '15m' ? 900 : 300
+  const winSecs = intervalSecs(String(active['interval'] ?? '5m'))
   const slotOffset = state.slot_offset ?? 0
 
   const visibleTs = new Set<string>()
   for (let i = -2; i <= 2; i++) {
-    const slotEndTs = endTs + (i + slotOffset) * intervalSecs
-    const slotStartTs = slotEndTs - intervalSecs
+    const slotEndTs = endTs + (i + slotOffset) * winSecs
+    const slotStartTs = slotEndTs - winSecs
     visibleTs.add(String(slotStartTs))
   }
 
@@ -249,8 +259,27 @@ export const actions: Record<string, (args: unknown[]) => Promise<void>> = {
 
   // ── chart ──────────────────────────────────────────────────────────────────
   set_interval: async ([iv]: unknown[]) => {
-    await chart.setChartInterval(String(iv ?? '5m'))
-    // Engine_002: chain refresh_slot_results + load_candles after interval switch
+    const nextIv = String(iv ?? '5m')
+    // Keep the same asset where it trades at the new interval (SOL has no
+    // hourly/daily, DOGE has no daily), else fall back to the first market that
+    // does. Without following the selection the trade panel kept its old-interval
+    // window while the chart moved — a 5m ticket under a 1d chart.
+    const wins = (state.windows ?? []) as Record<string, unknown>[]
+    const sameAsset = wins.find(w =>
+      String(w['interval'] ?? '') === nextIv &&
+      String(w['asset'] ?? '') === String(state.chart_asset ?? '') &&
+      String(w['up_token'] ?? '') !== '')
+    const target = sameAsset ?? wins.find(w =>
+      String(w['interval'] ?? '') === nextIv && String(w['up_token'] ?? '') !== '')
+    await chart.setChartInterval(nextIv)
+    if (target) {
+      // _setActiveWindow already chains refresh_slot_results + load_candles.
+      await _setActiveWindow(String(target['slug'] ?? ''))
+      return
+    }
+    // No market at that interval YET (discovery still warming). Don't refuse —
+    // the interval is the user's intent. pickActiveWindow enforces the
+    // interval/selection invariant on the next poll, so this self-heals.
     await Promise.all([_refreshSlotResults(), _loadCandles()])
   },
   set_mode: async ([mode]: unknown[]) => {

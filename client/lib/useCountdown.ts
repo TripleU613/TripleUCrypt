@@ -17,11 +17,13 @@ export interface Countdown {
   secsLeft: number
   /** No end timestamp, or past the window's end by more than one full interval. */
   stale: boolean
-  /** Minutes part, unpadded. */
+  /** Whole hours, unpadded; '0' below an hour. */
+  hh: string
+  /** Minutes: unpadded below an hour, zero-padded to 2 once `hh` is non-zero. */
   mm: string
   /** Seconds part, zero-padded to 2. */
   ss: string
-  /** `m:ss`, or '—' when stale. */
+  /** `m:ss`, or `h:mm:ss` for the hour-plus windows; '—' when stale. */
   text: string
 }
 
@@ -31,8 +33,8 @@ const nowSecs = (): number => Math.floor(Date.now() / 1000)
  * Pure countdown math.
  *
  * @param endTs     window end, unix seconds (0/absent → stale)
- * @param intervalS window length in seconds (300 for 5m, 900 for 15m) — how far
- *                  past `endTs` to tolerate before calling it stale
+ * @param intervalS window length in seconds (see lib/intervals.ts) — how far past
+ *                  `endTs` to tolerate before calling it stale
  * @param now       current time, unix seconds
  */
 export function computeCountdown(endTs: number, intervalS: number, now: number): Countdown {
@@ -40,9 +42,16 @@ export function computeCountdown(endTs: number, intervalS: number, now: number):
   // A missing/zero endTs is stale: there is no window to count down to, so
   // callers render a dash rather than a meaningless 0:00.
   const stale = !(endTs > 0) || now > endTs + intervalS
-  const mm = String(Math.floor(secsLeft / 60))
+  const h = Math.floor(secsLeft / 3600)
+  const hh = String(h)
+  // 1h/1d windows need an hours field; below an hour the shape is unchanged, so
+  // mm stays the total minutes ("10:00") exactly as every caller already renders.
+  const mm = h > 0
+    ? String(Math.floor((secsLeft % 3600) / 60)).padStart(2, '0')
+    : String(Math.floor(secsLeft / 60))
   const ss = String(secsLeft % 60).padStart(2, '0')
-  return { secsLeft, stale, mm, ss, text: stale ? '—' : `${mm}:${ss}` }
+  const text = stale ? '—' : h > 0 ? `${hh}:${mm}:${ss}` : `${mm}:${ss}`
+  return { secsLeft, stale, hh, mm, ss, text }
 }
 
 /**

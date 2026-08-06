@@ -3,6 +3,7 @@ import type { AppState } from './state.js'
 import { fastSleep, tickSleep } from './performance.js'
 import { bus } from '../bus.js'
 import type { TimeSlot, MarketWindow } from '../types.js'
+import { intervalSecs } from '../intervals.js'
 import WebSocket from 'ws'
 import { fetchOpenPriceAt } from '../io/kraken.js'
 import { guardSocket } from '../io/ws-guard.js'
@@ -130,7 +131,7 @@ export function computeWindowTimeLabel(
   const active = windows[0] as Record<string, unknown>
   const activeEndTs = (active['end_ts'] as number) ?? 0
   const interval = (active['interval'] as string) ?? '5m'
-  const intervalSecs = interval === '15m' ? 900 : 300
+  const winSecs = intervalSecs(interval)
 
   let startTs: number
   let endTs: number
@@ -138,10 +139,10 @@ export function computeWindowTimeLabel(
   if (viewingSlot) {
     const slotTs = Number(viewingSlot)
     startTs = slotTs
-    endTs = slotTs + intervalSecs
+    endTs = slotTs + winSecs
   } else {
     endTs = activeEndTs
-    startTs = endTs - intervalSecs
+    startTs = endTs - winSecs
   }
 
   const prefix = viewingFuture ? 'NEXT' : viewingSlot ? 'PAST' : 'LIVE'
@@ -175,14 +176,51 @@ export function computeWindowTimeLabel(
   const endTime = timeFmt.format(endDate)
 
   void nowTs // suppress unused warning
+  // A 1d window runs noon-to-noon ET: one date plus "12:00–12:00" would read as a
+  // zero-length window, so name the end's date too when the window crosses a day.
+  const endParts = etFmt.formatToParts(endDate)
+  const endGet = (type: string) => endParts.find(p => p.type === type)?.value ?? ''
+  const endDateStr = `${endGet('weekday')} ${endGet('month')} ${endGet('day')}`
+  if (endDateStr !== dateStr) {
+    return `${prefix} ${dateStr} ${startTime} → ${endDateStr} ${endTime} ET`
+  }
   return `${prefix} ${dateStr} · ${startTime}–${endTime} ET`
 }
 
 export function computeWindowTimeStr(secsLeft: number): string {
   if (secsLeft <= 0) return '—'
-  const m = Math.floor(secsLeft / 60)
+  // 1h/1d windows need an hours field — m:ss would read "1439:59" for a day.
+  const h = Math.floor(secsLeft / 3600)
+  const m = Math.floor((secsLeft % 3600) / 60)
   const s = Math.floor(secsLeft % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/**
+ * The window the user is actually on.
+ *
+ * state.windows is REBUILT from scratch on every poll, so a selection can only
+ * be carried across polls by SLUG — active_window is just an index into the
+ * array that existed when the card was clicked. Falls back to the first tradable
+ * window of the selected interval (what a fresh interval switch wants), then to
+ * index 0.
+ */
+export function pickActiveWindow(
+  wins: Record<string, unknown>[],
+  selectedSlug: string,
+  interval: string,
+): { idx: number } {
+  // Honour the remembered slug on its own: selecting a market CARD is
+  // independent of the timeframe pill, and _setActiveWindow keeps state.interval
+  // in step with whatever was selected, so the two can no longer disagree.
+  let idx = selectedSlug ? wins.findIndex(w => String(w['slug'] ?? '') === selectedSlug) : -1
+  if (idx < 0) {
+    idx = wins.findIndex(w =>
+      String(w['interval'] ?? '') === interval && String(w['up_token'] ?? '') !== '')
+  }
+  return { idx: idx < 0 ? 0 : idx }
 }
 
 export function computeMarketsReady(
@@ -215,11 +253,11 @@ export function computeTimeSlots(
   const active = windows[0]
   const endTs = (active['end_ts'] as number) ?? 0
   const interval = (active['interval'] as string) ?? '5m'
-  const intervalSecs = interval === '15m' ? 900 : 300
+  const winSecs = intervalSecs(interval)
 
   for (let i = -2; i <= 2; i++) {
-    const slotEndTs = endTs + (i + slotOffset) * intervalSecs
-    const slotStartTs = slotEndTs - intervalSecs
+    const slotEndTs = endTs + (i + slotOffset) * winSecs
+    const slotStartTs = slotEndTs - winSecs
     const label = _fmtTs(slotStartTs)
     const slotKey = String(slotStartTs)
     const isPast = slotEndTs <= nowTs
@@ -340,9 +378,12 @@ export async function runTickWindows(signal: AbortSignal): Promise<void> {
     patch('secs_left', secsLeft)
     patch('clock_tick', (state.clock_tick ?? 0) + 1)
 
-    // Engine_015: update window time label every tick
+    // Engine_015: update window time label every tick. Label the SELECTED window,
+    // not windows[0] — its interval is what decides the range shown.
+    const allWins = (state.windows ?? []) as Record<string, unknown>[]
+    const activeWin = allWins[state.active_window ?? 0]
     patch('window_time_label', computeWindowTimeLabel(
-      state.windows ?? [],
+      activeWin ? [activeWin] : allWins,
       state.viewing_slot ?? '',
       state.viewing_future ?? false,
       nowTs,
@@ -394,11 +435,16 @@ async function _refreshWindows(): Promise<void> {
     if (!wins.length) { patch('feed_degraded', true); return }
     patch('feed_degraded', false)
 
-    // Fetch open price for each window (Chainlink if at boundary, else Kraken 1m)
+    // Fetch open price for each window (Chainlink if at boundary, else Kraken)
+    // — but only for windows we haven't captured yet. FIRST capture wins below
+    // anyway, so re-fetching a known open was pure Kraken load: harmless at 14
+    // windows, a rate-limit magnet now that 1h/1d push that toward 25.
+    const knownOpens = state.window_opens ?? {}
     const newOpenEntries = await Promise.all(wins.map(async (w) => {
       const est = w.event_start_ts ?? 0
       if (!est) return null
       const key = _openKey(w)
+      if ((knownOpens[key] ?? 0) > 0) return null
       try {
         const price = await fetchOpenPriceAt(w.asset ?? 'BTC', est)
         return price > 0 ? [key, price] as [string, number] : null
@@ -421,7 +467,16 @@ async function _refreshWindows(): Promise<void> {
     const mergedOpens = { ...newOpens, ...kept }
     patch('window_opens', mergedOpens)
 
-    const active = wins[0]
+    // Re-resolve the user's selection in the freshly built array. This used to be
+    // wins[0] unconditionally, which quietly dragged the trade panel back to the
+    // first market (BTC 5m) on every poll — invisible while that WAS the only
+    // sensible default, fatal once 1h/1d cards exist and can be selected.
+    const prevWins = (state.windows ?? []) as Record<string, unknown>[]
+    const prevSlug = String(prevWins[state.active_window ?? 0]?.['slug'] ?? '')
+    const { idx } = pickActiveWindow(
+      wins as unknown as Record<string, unknown>[], prevSlug, state.interval ?? '5m')
+    const active = wins[idx] ?? wins[0]
+    patch('active_window', idx)
 
     // Engine_008: rollover_rev bump on window boundary crossing
     if (_lastEndTs > 0 && active.end_ts > _lastEndTs && active.slug === _rolloverSlug) {
@@ -477,8 +532,8 @@ async function _refreshWindows(): Promise<void> {
 export async function runLoadProbHistory(slotTs: number): Promise<void> {
   const asset = state.chart_asset ?? 'BTC'
   const interval = state.interval ?? '5m'
-  const intervalSecs = interval === '15m' ? 900 : 300
-  const boundaryTs = slotTs + intervalSecs // the window's end_ts
+  const winSecs = intervalSecs(interval)
+  const boundaryTs = slotTs + winSecs // the window's end_ts
 
   // Stale check before starting
   if (state.viewing_slot !== String(slotTs)) return
@@ -585,8 +640,8 @@ export async function runSetViewingSlot(slotTs: number): Promise<void> {
 
   const asset = state.chart_asset ?? 'BTC'
   const interval = state.interval ?? '5m'
-  const intervalSecs = interval === '15m' ? 900 : 300
-  const slotEnd = slotTs + intervalSecs
+  const winSecs = intervalSecs(interval)
+  const slotEnd = slotTs + winSecs
 
   // Update effective_condition/series_id (refined by load_prob_history)
   const liveCid = active ? String(active['condition_id'] ?? '') : ''
@@ -622,7 +677,8 @@ export async function runSetViewingSlot(slotTs: number): Promise<void> {
   }
 
   // Fetch the full intra-window 1-minute price history so the canvas shows the
-  // whole window end-to-end (5 bars for 5m, 15 for 15m), not one interval bar.
+  // whole window end-to-end (bar size follows the span — see chart.ts), not one
+  // interval-sized bar.
   const winCandles = await fetchWindowCandles(asset, slotTs, slotEnd)
   if (state.viewing_slot !== String(slotTs)) return // stale
   if (winCandles.length > 0) {

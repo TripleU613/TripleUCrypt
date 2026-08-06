@@ -16,6 +16,11 @@
 import { useRef, useEffect } from 'react'
 import { useStore } from '../../store'
 import { C, FONT, MS } from '../../constants/index.js'
+import { intervalSecs } from '../../lib/intervals.js'
+import {
+  WIN_RUNGS, pickWindowRung, quantizeCam, decimateBucketMs,
+  type CamBand, type CamBounds,
+} from '../../lib/chartCamera.js'
 
 // ── Helpers to derive computed values from the store ─────────────────────────
 
@@ -26,7 +31,7 @@ function deriveViewStartTs(viewingSlot: string): number {
 
 function deriveViewEndTs(viewStartTs: number, interval: string): number {
   if (viewStartTs <= 0) return 0
-  return viewStartTs + (interval === '15m' ? 15 * 60 : 5 * 60)
+  return viewStartTs + intervalSecs(interval)
 }
 
 interface OHLCRow {
@@ -195,6 +200,12 @@ export function EChart(): JSX.Element {
   const zoomRef  = useRef<Record<string, {lo: number; hi: number}>>({})
   const tipRef   = useRef<Record<string, number>>({})
   const winRef   = useRef<Record<string, number>>({})
+  // rungRef: the QUANTIZED x span currently in force (winRef only eases toward
+  // it). camTgtRef: the quantized y band camZoom is easing toward — the
+  // hysteresis has to be evaluated against this, not against the eased value in
+  // zoomRef, or the "hold still" band drifts along with the easing.
+  const rungRef  = useRef<Record<string, number>>({})
+  const camTgtRef = useRef<Record<string, CamBand>>({})
   const axisLblRef = useRef<Record<string, {ticks: Map<string, {v: number; y: number; targetY: number; alpha: number; dying: boolean; bornAt: number; dieAt: number}>; lastCalc: number}>>({})
   const hoverRef = useRef<{x: number; y: number} | null>(null)
   const candleView = useRef({ count: 70, offset: 0, targetCount: 70, targetOffset: 0, touched: false })
@@ -222,17 +233,18 @@ export function EChart(): JSX.Element {
   useEffect(() => { animDurRef.current = ANIM_MS[uiQuality] ?? 200 }, [uiQuality])
 
   const CAP    = 600
-  const WINDOW = 90000
-  const WIN_MIN = 20000
-  const WIN_MAX = 150000
+  // The live x span is one of WIN_RUNGS (see lib/chartCamera) — the old
+  // WINDOW/WIN_MIN/WIN_MAX trio described a continuously growing span, which is
+  // what made the curve squeeze instead of scroll.
+  const WIN_MAX = WIN_RUNGS[WIN_RUNGS.length - 1]
   const PAD    = 0.10
   const RPAD   = 56
   const BAXIS  = 16
   const BLEED  = 80
   const FILL_STEP = 1000
   const GAP_MS    = 1500
-  const SYNTH_N   = 6
   const MAX_DRAW_PTS = 900
+  const PROB_BOUNDS: CamBounds = { min: 0, max: 100 }
 
   // ── Sync refs on every render ───────────────────────────────────────────
   modeRef.current     = mode
@@ -264,11 +276,6 @@ export function EChart(): JSX.Element {
   }
   histProbRef.current = (viewing && Array.isArray(hist_prob)) ? hist_prob : []
 
-  function intervalMins(iv: string): number {
-    if (!iv) return 5
-    const m = String(iv).match(/(\d+)/)
-    return m ? parseInt(m[1], 10) : 5
-  }
 
   function pushPrice(t: number, price: number) {
     if (viewingRef.current) return
@@ -292,7 +299,7 @@ export function EChart(): JSX.Element {
   function foldCandle(tMs: number, price: number) {
     const arr = ohlcRef.current
     if (arr.length === 0) return
-    const slotSec = intervalMins(intervalRef.current) * 60
+    const slotSec = intervalSecs(intervalRef.current)
     const tSec = Math.floor(tMs / 1000)
     const last = arr[arr.length - 1]
     const bucket = Math.floor(tSec / slotSec) * slotSec
@@ -322,8 +329,10 @@ export function EChart(): JSX.Element {
       prevAsset.current = asset
       priceBuf.current = []
       zoomRef.current = {}
+      camTgtRef.current = {}
       tipRef.current = {}
       winRef.current = {}
+      rungRef.current = {}
       axisLblRef.current = {}
       candleView.current = { count: 70, offset: 0, targetCount: 70, targetOffset: 0, touched: false }
     }
@@ -333,16 +342,22 @@ export function EChart(): JSX.Element {
   // NOTE: do NOT clear ohlcRef — price candles are continuous across betting
   // windows; clearing blanked the candle chart every rollover (foldCandle
   // no-ops on an empty buffer, so it couldn't rebuild).
+  // For exactly the same reason we do NOT clear priceBuf or the 'line' camera:
+  // SPOT PRICE is continuous across betting windows too. Clearing it reset the
+  // visible span to ~0 (re-squeezing the whole curve) and re-seeded the y camera
+  // from a 2-point range — a ~16x zoom slam — at every single rollover.
+  // Probability/ask data IS per-token, so that half still resets.
   useEffect(() => {
     if (prevRollRef.current === rollover_rev) return
     prevRollRef.current = rollover_rev
     if (viewingRef.current || viewingFutureRef.current) return
-    priceBuf.current = []
-    askBuf.current   = []
-    zoomRef.current  = {}
-    tipRef.current   = {}
-    winRef.current   = {}
-    axisLblRef.current = {}
+    askBuf.current = []
+    delete zoomRef.current['step']
+    delete camTgtRef.current['step']
+    delete tipRef.current['step']
+    delete winRef.current['step']
+    delete rungRef.current['step']
+    delete axisLblRef.current['step']
     const t = Date.now()
     flashRef.current = { start: t, end: t + 650 }
   }, [rollover_rev])
@@ -363,9 +378,15 @@ export function EChart(): JSX.Element {
     let candleIntro = { key: '', start: 0 }
     let lineIntro   = { key: '', start: 0 }
     let _modeLast = '', _modeT = 0, _dprNow = 1
-    let denseCache: {line: {key: string; pts: {t: number; v: number}[]}; step: {key: string; pts: {t: number; v: number}[]}} = {
-      line: { key: '', pts: [] },
-      step: { key: '', pts: [] },
+    type DenseState = {
+      buf: {t: number; [k: string]: number}[] | null   // identity of the source buffer
+      pts: {t: number; v: number}[]
+      lastT: number                                    // last COMMITTED source t
+      live: boolean                                    // pts ends with the live sample
+    }
+    const denseCache: {line: DenseState; step: DenseState} = {
+      line: { buf: null, pts: [], lastT: -Infinity, live: false },
+      step: { buf: null, pts: [], lastT: -Infinity, live: false },
     }
     let tgtPin = { state: '', since: 0 }
 
@@ -743,41 +764,36 @@ export function EChart(): JSX.Element {
       return [k.lo, k.hi]
     }
 
-    // Camera y-scale: hold the vertical SCALE (range) near-fixed and only PAN the
-    // center, so the line translates rigidly (moves) instead of re-scaling
-    // (warping) every tick. lo/hi are the raw visible data bounds; we add pad.
-    function camZoom(key: string, dataLo: number, dataHi: number): [number, number] {
+    // Camera y-scale: a STEP function of the visible data (quantizeCam), eased
+    // only ACROSS a step. The old version eased toward a target recomputed from
+    // continuously-moving data, so the vertical scale never settled — a fixed
+    // price still accumulated ~1000px of vertical travel over a few minutes.
+    // Easing toward a piecewise-CONSTANT target settles exactly and then holds,
+    // which is what makes the curve translate instead of warp.
+    function camZoom(key: string, dataLo: number, dataHi: number, bounds?: CamBounds): [number, number] {
+      const tgt = quantizeCam(dataLo, dataHi, camTgtRef.current[key], bounds)
+      camTgtRef.current[key] = tgt
       const z = zoomRef.current
-      const pad = Math.max((dataHi - dataLo) * 0.22, 1e-9)
       const k = z[key]
-      if (!k || !isFinite(k.lo) || !isFinite(k.hi)) { z[key] = { lo: dataLo - pad, hi: dataHi + pad }; return [z[key].lo, z[key].hi] }
-      const curRange = Math.max(k.hi - k.lo, 1e-9)
-      const curCenter = (k.lo + k.hi) / 2
-      const dataRange = Math.max(dataHi - dataLo, 1e-9)
-      const dataCenter = (dataLo + dataHi) / 2
-      // snap on a drastic change (window rollover / asset switch)
-      if (dataRange > curRange * 4 || Math.abs(dataCenter - curCenter) > curRange * 4) {
-        z[key] = { lo: dataLo - pad, hi: dataHi + pad }; return [z[key].lo, z[key].hi]
-      }
-      // target range: keep it; only grow when the data fills it, shrink lazily
-      const need = dataRange * 1.3
-      let targetRange = curRange
-      if (need > curRange) targetRange = need
-      else if (dataRange < curRange * 0.45) targetRange = need
-      const newRange = curRange + (targetRange - curRange) * smoothK(1100)  // very gentle zoom (stays rigid)
-      // DEADZONE pan: keep the center still while the data stays inside the
-      // inner band; only pan when it pushes past an edge. This stops the whole
-      // line jerking the opposite way on every tick (the "drop = split-sec up").
-      const inner = newRange / 2 - newRange * 0.14
-      const topEdge = curCenter + inner
-      const botEdge = curCenter - inner
-      let targetCenter = curCenter
-      if (dataHi > topEdge) targetCenter += (dataHi - topEdge)
-      else if (dataLo < botEdge) targetCenter -= (botEdge - dataLo)
-      const newCenter = curCenter + (targetCenter - curCenter) * smoothK(450)
-      k.lo = newCenter - newRange / 2
-      k.hi = newCenter + newRange / 2
+      if (!k || !isFinite(k.lo) || !isFinite(k.hi)) { z[key] = { lo: tgt.lo, hi: tgt.hi }; return [tgt.lo, tgt.hi] }
+      const f = smoothK(120)
+      // Snap inside epsilon so the transform becomes bit-identical between steps
+      // (an asymptote that never arrives is still sub-pixel motion every frame).
+      const eps = (tgt.hi - tgt.lo) * 1e-3
+      k.lo = Math.abs(tgt.lo - k.lo) <= eps ? tgt.lo : k.lo + (tgt.lo - k.lo) * f
+      k.hi = Math.abs(tgt.hi - k.hi) <= eps ? tgt.hi : k.hi + (tgt.hi - k.hi) * f
       return [k.lo, k.hi]
+    }
+
+    // The visible x span: quantized rung, eased ONLY while a rung change is in
+    // flight (~400ms). Between rungs the span is constant, so xMin = xMax - win
+    // moves every point left at identical px/ms.
+    function camSpan(key: string, span0: number): number {
+      const rung = pickWindowRung(span0, rungRef.current[key])
+      rungRef.current[key] = rung
+      const w = lerpWindow(key, rung)
+      if (Math.abs(rung - w) <= rung * 1e-3) { winRef.current[key] = rung; return rung }
+      return w
     }
 
     function lerpTip(key: string, val: number) {
@@ -819,46 +835,63 @@ export function EChart(): JSX.Element {
       ctx.lineTo(pts[n - 1].x, pts[n - 1].y)
     }
 
+    // APPEND-ONLY dense curve.
+    //
+    // The old version rebuilt the whole tail every tick (its cache key included
+    // the live value) and re-synthesised five eased points between the last two
+    // samples. Both re-shape history: the synth points slide as the live sample
+    // moves, so the segment that was drawn last frame is not the segment drawn
+    // this frame. Now every point except the live one is committed ONCE and never
+    // touched again, so the past is genuinely immutable and can only translate.
+    //
+    // Flat gap-fill for a stale feed stays — that describes real (missing) data,
+    // not an interpolation of the live pair.
     function buildDense(buf: {t: number; [k: string]: number}[], getV: (p: {t: number; [k: string]: number}) => number, cacheKey: 'line'|'step') {
       const c = denseCache[cacheKey]
-      if (!buf || buf.length === 0) { c.key = ''; c.pts = []; return c.pts }
-      const lastB = buf[buf.length - 1]
-      const key = buf.length + ':' + buf[0].t + ':' + lastB.t + ':' + getV(lastB)
-      if (c.key === key) return c.pts
-      const minT = Date.now() - WIN_MAX - 5000
-      const src: {t: number; v: number}[] = []
-      for (const p of buf) {
-        if (p.t < minT) continue
+      if (!buf || buf.length === 0) { c.buf = null; c.pts = []; c.lastT = -Infinity; c.live = false; return c.pts }
+      // Buffer identity, not contents: every reset path replaces the array
+      // (priceBuf.current = []) while the CAP splice keeps it, which is exactly
+      // the distinction between "start over" and "keep appending".
+      if (c.buf !== buf) { c.buf = buf; c.pts = []; c.lastT = -Infinity; c.live = false }
+      if (c.live) { c.pts.pop(); c.live = false }   // drop last frame's live point
+
+      const lastI = buf.length - 1
+      for (let i = 0; i < lastI; i++) {
+        const p = buf[i]
+        if (p.t <= c.lastT) continue
         const v = getV(p)
         if (!isFinite(v)) continue
-        const sec = Math.floor(p.t / 1000)
-        const ls = src[src.length - 1]
-        if (ls && Math.floor(ls.t / 1000) === sec) { ls.t = p.t; ls.v = v }
-        else src.push({ t: p.t, v })
-      }
-      if (src.length < 2) { c.key = key; c.pts = src.slice(); return c.pts }
-      const out: {t: number; v: number}[] = []
-      for (let i = 0; i < src.length - 1; i++) {
-        const a = src[i], b = src[i + 1]
-        out.push({ t: a.t, v: a.v })
-        if (b.t <= a.t) continue
-        let t0 = a.t
-        if (b.t - a.t > GAP_MS) {
-          const fillEnd = b.t - GAP_MS
-          for (let ft = a.t + FILL_STEP; ft <= fillEnd; ft += FILL_STEP) out.push({ t: ft, v: a.v })
-          t0 = Math.max(a.t, fillEnd)
+        // 1s buckets on absolute time — a committed point never changes bucket.
+        if (c.pts.length && Math.floor(c.lastT / 1000) === Math.floor(p.t / 1000)) continue
+        const prev = c.pts[c.pts.length - 1]
+        if (prev && p.t - prev.t > GAP_MS) {
+          const fillEnd = p.t - GAP_MS
+          for (let ft = prev.t + FILL_STEP; ft <= fillEnd; ft += FILL_STEP) c.pts.push({ t: ft, v: prev.v })
         }
-        if (b.v !== a.v && b.t > t0) {
-          for (let s = 1; s < SYNTH_N; s++) {
-            const f = s / SYNTH_N
-            out.push({ t: t0 + (b.t - t0) * f, v: a.v + (b.v - a.v) * easeInOutCubic(f) })
-          }
-        }
+        c.pts.push({ t: p.t, v })
+        c.lastT = p.t
       }
-      const lastSrc = src[src.length - 1]
-      out.push({ t: lastSrc.t, v: lastSrc.v })
-      c.key = key; c.pts = out
-      return out
+
+      // The live sample rides on the end, replaced (not accumulated) each frame.
+      const lastB = buf[lastI]
+      const lv = getV(lastB)
+      if (isFinite(lv) && lastB.t >= c.lastT) {
+        const prev = c.pts[c.pts.length - 1]
+        if (prev && lastB.t - prev.t > GAP_MS) {
+          const fillEnd = lastB.t - GAP_MS
+          for (let ft = prev.t + FILL_STEP; ft <= fillEnd; ft += FILL_STEP) c.pts.push({ t: ft, v: prev.v })
+          c.lastT = c.pts[c.pts.length - 1].t
+        }
+        c.pts.push({ t: lastB.t, v: lv })
+        c.live = true
+      }
+
+      // Trim well behind the widest window so the left edge never truncates.
+      const minT = Date.now() - WIN_MAX - 5000
+      let drop = 0
+      while (drop < c.pts.length - 2 && c.pts[drop + 1].t < minT) drop++
+      if (drop > 0) c.pts.splice(0, drop)
+      return c.pts
     }
 
     function densePathPts(
@@ -871,9 +904,18 @@ export function EChart(): JSX.Element {
     ): {x: number; y: number}[] {
       let d = dense.filter((p) => p.t >= xMin)
       if (d.length > MAX_DRAW_PTS) {
-        const stride = Math.ceil(d.length / MAX_DRAW_PTS)
+        // Bucket on ABSOLUTE time, not on index: an index stride re-picks which
+        // points survive as the window scrolls, so the curve shimmers between two
+        // shapes. A time bucket keeps the same survivors frame after frame.
+        const bucket = decimateBucketMs(d[d.length - 1].t - d[0].t, MAX_DRAW_PTS)
         const dec: typeof d = []
-        for (let i = 0; i < d.length; i += stride) dec.push(d[i])
+        let lastB = NaN
+        for (const p of d) {
+          const b = Math.floor(p.t / bucket)
+          if (b === lastB) continue
+          lastB = b
+          dec.push(p)
+        }
         if (dec[dec.length - 1] !== d[d.length - 1]) dec.push(d[d.length - 1])
         d = dec
       }
@@ -1175,13 +1217,16 @@ export function EChart(): JSX.Element {
       if (!buf.length) { drawEmpty('waiting for price…'); return }
 
       const last = buf[buf.length - 1]
-      const span0 = now - buf[0].t
-      const wantWin = Math.max(WIN_MIN, Math.min(WIN_MAX, Math.min(WINDOW, span0 + 4000)))
-      const win = lerpWindow('line', wantWin)
-      // Edge advances continuously with the clock = smooth scroll.
+      // Quantized span, and xMin pinned to it UNCONDITIONALLY. The old code
+      // clamped xMin to buf[0].t with a span that grew every frame, so the left
+      // edge stood still while the right edge advanced — the whole curve was
+      // squeezed horizontally every tick instead of sliding. A short buffer now
+      // occupies only part of the width; that is correct, and the left-bleed
+      // extrapolation below already handles a path that starts mid-canvas.
+      const win = camSpan('line', now - buf[0].t)
       const xMax = now
-      const xMin = Math.min(now - 1000, Math.max(now - win, buf[0].t))
-      const xOf = (t: number) => ((t - xMin) / (xMax - xMin)) * pw
+      const xMin = xMax - win
+      const xOf = (t: number) => ((t - xMin) / win) * pw
 
       let vis = buf.filter((p) => p.t >= xMin)
       if (vis.length < 2) vis = buf.slice(-2)
@@ -1216,7 +1261,11 @@ export function EChart(): JSX.Element {
       const dense = buildDense(buf as {t: number; [k: string]: number}[], (p) => (p as unknown as {price: number}).price, 'line')
       const pathPts = densePathPts(dense, xMin, xOf, yOf, vis as {t: number; [k: string]: number}[], (p) => (p as unknown as {price: number}).price)
       pathPts.push({ x: tipX, y: tipY })
-      {
+      // Bleed off the left edge only when the path actually REACHES that edge.
+      // With a quantized span a young buffer legitimately starts mid-canvas, and
+      // extrapolating the first segment's slope across that gap would fling the
+      // line off-screen instead of just hiding the stroke's cap.
+      if (pathPts.length && pathPts[0].x <= 1) {
         const a = pathPts[0], b = pathPts[1] || a
         const dx = b.x - a.x
         const sl = dx > 0.5 ? (b.y - a.y) / dx : 0
@@ -1254,13 +1303,11 @@ export function EChart(): JSX.Element {
       if (!buf.length) { drawEmpty('waiting for order book…'); return }
 
       const last = buf[buf.length - 1]
-      const span0 = now - buf[0].t
-      const wantWin = Math.max(WIN_MIN, Math.min(WIN_MAX, Math.min(WINDOW, span0 + 4000)))
-      const win = lerpWindow('step', wantWin)
-      // Edge advances continuously with the clock = smooth scroll.
+      // See drawLine: constant span, xMin = xMax - win, no clamp to buf[0].t.
+      const win = camSpan('step', now - buf[0].t)
       const xMax = now
-      const xMin = Math.min(now - 1000, Math.max(now - win, buf[0].t))
-      const xOf = (t: number) => ((t - xMin) / (xMax - xMin)) * pw
+      const xMin = xMax - win
+      const xOf = (t: number) => ((t - xMin) / win) * pw
 
       let vis = buf.filter((p) => p.t >= xMin)
       if (vis.length < 3) vis = buf.slice(-3)
@@ -1269,8 +1316,11 @@ export function EChart(): JSX.Element {
       for (const p of vis) { if (p.pct < tlo) tlo = p.pct; if (p.pct > thi) thi = p.pct }
       tlo = Math.min(tlo, last.pct); thi = Math.max(thi, last.pct)
       if (thi - tlo < 6) { const m = (tlo + thi) / 2; tlo = m - 3; thi = m + 3 }
-      let [lo, hi] = camZoom('step', tlo, thi)
-      lo = Math.max(0, lo); hi = Math.min(100, hi)
+      // Probability is bounded 0–100, but CROPPING the band there (the old
+      // Math.max/Math.min) changed the range as the curve approached an edge —
+      // i.e. it re-scaled. camZoom SLIDES the quantized band inside the domain
+      // instead, so the px-per-percent never changes near 0% or 100%.
+      const [lo, hi] = camZoom('step', tlo, thi, PROB_BOUNDS)
       const yOf = (v: number) => ph - ((v - lo) / (hi - lo)) * ph
 
       const tipVal = lerpTip('step', last.pct)
@@ -1292,7 +1342,8 @@ export function EChart(): JSX.Element {
       const tipX = pw
       const dense = buildDense(buf as {t: number; [k: string]: number}[], (p) => (p as unknown as {pct: number}).pct, 'step')
       const pts = densePathPts(dense, xMin, xOf, yOf, vis as {t: number; [k: string]: number}[], (p) => (p as unknown as {pct: number}).pct)
-      {
+      // See drawLine: bleed only when the path reaches the left edge.
+      if (pts.length && pts[0].x <= 1) {
         const a = pts[0], b = pts[1] || a
         const dx = b.x - a.x
         const sl = dx > 0.5 ? (b.y - a.y) / dx : 0
@@ -1336,7 +1387,13 @@ export function EChart(): JSX.Element {
         view = arr.filter((c) => c.time * 1000 >= wMin - 1 && c.time * 1000 < wMax)
         if (view.length < 2) { drawEmpty('loading candles…'); return }
         // Fit to the actual candle extent so they fill the canvas evenly.
-        const slotMs = 60 * 1000
+        // Bar width is MEASURED from the data, not assumed to be 1 minute: the
+        // server picks granularity from the window span (see
+        // kraken.rangeGranularityMins -- a 1d window returns 15-minute bars), and
+        // fineWindowCandles can hand back another spacing again. Assuming 60s made
+        // the right-most bar and the time axis wrong by up to 14 minutes.
+        const gap = view[view.length - 1].time - view[view.length - 2].time
+        const slotMs = (gap > 0 ? gap : 60) * 1000
         xMin = view[0].time * 1000
         xMax = view[view.length - 1].time * 1000 + slotMs
         slotW = pw / view.length
@@ -1360,7 +1417,7 @@ export function EChart(): JSX.Element {
         cv.targetOffset = Math.min(Math.max(0, cv.targetOffset), Math.max(0, total - tCount))
         const start = total - count - offset
         view = arr.slice(start, start + count)
-        const slotMs = intervalMins(intervalRef.current) * 60 * 1000
+        const slotMs = intervalSecs(intervalRef.current) * 1000
         xMin = view[0].time * 1000
         xMax = view[view.length - 1].time * 1000 + slotMs
         slotW = pw / (view.length + 1)
@@ -1507,7 +1564,8 @@ export function EChart(): JSX.Element {
           // Complete refresh on mode switch: drop smoothing/zoom/axis state so
           // the new mode seeds AT the current value and plays its entrance from
           // scratch — instead of gliding from the last shown canvas price.
-          tipRef.current = {}; zoomRef.current = {}; winRef.current = {}; axisLblRef.current = {}
+          tipRef.current = {}; zoomRef.current = {}; camTgtRef.current = {}
+          winRef.current = {}; rungRef.current = {}; axisLblRef.current = {}
         }
         _modeLast = m
       }

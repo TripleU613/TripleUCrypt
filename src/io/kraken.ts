@@ -25,7 +25,24 @@ export const ASSET_PAIRS: Record<string, [string, string]> = {
   BNB:  ["BNBUSD",  "BNBUSD"],
 };
 
-const INTERVALS: Record<string, number> = { "1m": 1, "5m": 5, "15m": 15 };
+/** Chart timeframe → Kraken OHLC interval in minutes. */
+const INTERVALS: Record<string, number> = { "1m": 1, "5m": 5, "15m": 15, "1h": 60, "1d": 1440 };
+
+/** Kraken's OHLC interval → the timeframe key we label its bars with. */
+const MINS_TO_TF: Record<number, string> = { 1: "1m", 5: "5m", 15: "15m", 60: "1h", 1440: "1d" };
+
+/**
+ * Bar size (minutes) for an intra-window fetch spanning `spanSecs`.
+ *
+ * Kraken returns at most ~720 bars per call and the hindsight canvas only needs
+ * ~60-100 points, so a day-long window must not be asked for at 1-minute
+ * granularity: 1440 bars is both truncated AND pointless detail.
+ */
+export function rangeGranularityMins(spanSecs: number): number {
+  if (spanSecs <= 3600)      return 1;    // 5m/15m/1h windows → ≤ 60 bars
+  if (spanSecs <= 6 * 3600)  return 5;
+  return 15;                              // 1d window → 96 bars
+}
 
 // ── Persistent undici pool ────────────────────────────────────────────────────
 
@@ -95,26 +112,42 @@ function _utcStr(ts: number): string {
 // ── Exported functions ────────────────────────────────────────────────────────
 
 /**
- * Return the Kraken 1-minute open price for `asset` at Unix timestamp `ts`.
- * Returns 0 on failure.
+ * Bar size (minutes) to read a window's OPEN price at `ts` from.
+ *
+ * Kraken serves ~720 bars ending at now regardless of `since`, so 1-minute bars
+ * only reach ~12h back — a 1d window's open (up to 24h old) simply isn't in that
+ * page. 15-minute bars reach ~7 days and still land exactly on an hourly/daily
+ * ET boundary, so the open is read, not guessed.
+ */
+function _openGranularityMins(ageSecs: number): number {
+  return ageSecs <= 8 * 3600 ? 1 : 15;
+}
+
+/**
+ * Return the Kraken open price for `asset` at Unix timestamp `ts`.
+ * Returns 0 on failure — including when the page doesn't actually cover `ts`.
  */
 export async function fetchOpenPriceAt(asset: string, ts: number): Promise<number> {
   const [pairReq, pairKey] = ASSET_PAIRS[asset] ?? ASSET_PAIRS["BTC"];
+  const gran = _openGranularityMins(Math.max(0, Math.trunc(Date.now() / 1000) - ts));
   try {
-    const result = await _getOHLC({ pair: pairReq, interval: 1, since: ts - 60 });
+    const result = await _getOHLC({ pair: pairReq, interval: gran, since: ts - gran * 60 });
     const rows = _ohlcRows(result, pairReq, pairKey);
     if (!rows.length) return 0;
     // Find candle where open time === ts exactly
     for (const k of rows) {
       if (parseInt(String(k[0]), 10) === ts) return parseFloat(String(k[1]));
     }
-    // Fallback: closest candle
+    // Fallback: the closest candle — but only if it actually contains `ts`. It
+    // used to accept ANY closest row, which for a boundary outside the returned
+    // page (a day-old 1d open) handed back a price hours away as "the open".
     const closest = rows.reduce((a, b) =>
       Math.abs(parseInt(String(a[0]), 10) - ts) <=
       Math.abs(parseInt(String(b[0]), 10) - ts)
         ? a
         : b,
     );
+    if (Math.abs(parseInt(String(closest[0]), 10) - ts) > gran * 60) return 0;
     return parseFloat(String(closest[1]));
   } catch {
     return 0;
@@ -144,15 +177,18 @@ export async function fetchKlinesSince(
 }
 
 /**
- * 1-minute OHLC bars for `asset` within [startTs, endTs) (Unix seconds).
+ * OHLC bars for `asset` within [startTs, endTs) (Unix seconds).
+ * Bar size defaults to whatever the span can be drawn from sensibly — 1-minute
+ * for the short windows (unchanged), coarser for an hour-plus window.
  */
 export async function fetchKlinesRange(
   startTs: number,
   endTs: number,
   asset = "BTC",
+  granMins = rangeGranularityMins(Math.max(0, endTs - startTs)),
 ): Promise<OHLCBar[]> {
   const [pairReq, pairKey] = ASSET_PAIRS[asset] ?? ASSET_PAIRS["BTC"];
-  const result = await _getOHLC({ pair: pairReq, interval: 1, since: startTs - 60 });
+  const result = await _getOHLC({ pair: pairReq, interval: granMins, since: startTs - granMins * 60 });
   const raw = _ohlcRows(result, pairReq, pairKey);
   const rows: OHLCBar[] = [];
   for (const k of raw) {
@@ -252,7 +288,7 @@ export function parseWsMessage(
     if (!tsRaw) continue;
     const tStr = new Date(tsRaw).toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
     const asset = String(b["symbol"] ?? "BTC/USD").split("/")[0];
-    const iv = parseInt(String(b["interval"] ?? "5"), 10) === 15 ? "15m" : "5m";
+    const iv = MINS_TO_TF[parseInt(String(b["interval"] ?? "5"), 10)] ?? "5m";
     const key = `${asset}:${iv}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push([

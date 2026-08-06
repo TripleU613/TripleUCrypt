@@ -1,5 +1,7 @@
 // Browser-safe pure computation helpers (no server imports)
 
+import { intervalSecs } from './intervals.js'
+
 export interface TimeSlot {
   label: string
   ts: number
@@ -36,13 +38,12 @@ export function computeTimeSlots(
 
   const active = windows[0]
   const endTs = (active['end_ts'] as number) ?? 0
-  const interval = (active['interval'] as string) ?? '5m'
-  const intervalSecs = interval === '15m' ? 900 : 300
+  const winSecs = intervalSecs((active['interval'] as string) ?? '5m')
   const slots: TimeSlot[] = []
 
   for (let i = -span; i <= span; i++) {
-    const slotEndTs = endTs + (i + slotOffset) * intervalSecs
-    const slotStartTs = slotEndTs - intervalSecs
+    const slotEndTs = endTs + (i + slotOffset) * winSecs
+    const slotStartTs = slotEndTs - winSecs
     const d = new Date(slotStartTs * 1000)
     const label = slotStartTs
       ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`

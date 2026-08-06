@@ -9,7 +9,7 @@
  * Order + heights persist to localStorage; a reset control restores defaults.
  *
  * Per-panel behaviour:
- *   time    — small; grows into a stacked 5m/15m, capped at its natural size.
+ *   time    — small; grows into a stacked 5m/15m/1h/1d, capped at its natural size.
  *   markets — scrolls internally when short; capped tall.
  *   stats   — resource grid; fewer columns (bigger tiles) as it grows.
  *   logs    — scrolls; grows large but capped.
@@ -24,14 +24,16 @@ import { LiveTrades } from '../market/LiveTrades.js'
 import { ResourceBar } from '../ResourceBar.js'
 import { ghostSegStyle } from '../shared/ui.js'
 import { C, D, FONT, SP, FS, FW } from '../../constants/index.js'
+import { INTERVALS } from '../../lib/intervals.js'
 
 type PanelId = 'time' | 'markets' | 'stats' | 'logs'
 const DEFAULT_ORDER: PanelId[] = ['time', 'markets', 'stats', 'logs']
 
-// Per-panel height limits (px). time is capped — it can't grow past a stacked
-// 5m/15m. markets/logs grow large but not unbounded. stats sits in between.
+// Per-panel height limits (px). time is capped — it can't grow past the four
+// timeframes stacked. markets/logs grow large but not unbounded. stats sits in
+// between.
 const LIMITS: Record<PanelId, { min: number; max: number }> = {
-  time:    { min: 40,  max: 132 },
+  time:    { min: 40,  max: 248 },
   markets: { min: 110, max: 900 },
   stats:   { min: 92,  max: 560 },
   logs:    { min: 90,  max: 900 },
@@ -64,9 +66,10 @@ function loadState(): Persisted {
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
-// ── Adaptive 5m / 15m time bar ────────────────────────────────────────────────
+// ── Adaptive timeframe bar (5m / 15m / 1h / 1d) ───────────────────────────────
 // Horizontal pills when short; stacks vertically when the panel is grown. The
-// green selection frame slides on whichever axis is active.
+// green selection frame slides on whichever axis is active — it measures the
+// selected segment, so it works for any number of options.
 function DockTimeBar() {
   const interval = useStore(s => s.interval) as string
   const barRef = useRef<HTMLDivElement>(null)
@@ -77,7 +80,10 @@ function DockTimeBar() {
   useEffect(() => {
     const bar = barRef.current
     if (!bar) return
-    const ro = new ResizeObserver(entries => setStacked((entries[0]?.contentRect.height ?? 0) > 64))
+    // Only stack once every timeframe gets a usable row (~30px each) — with four
+    // options the old 64px threshold produced four squashed 14px rows.
+    const ro = new ResizeObserver(entries =>
+      setStacked((entries[0]?.contentRect.height ?? 0) > 30 * INTERVALS.length))
     ro.observe(bar)
     return () => ro.disconnect()
   }, [])
@@ -109,7 +115,7 @@ function DockTimeBar() {
         border: `1px solid ${C.GREEN}`, borderRadius: D.R_SM,
         boxShadow: 'var(--tc-glow-up)', pointerEvents: 'none', boxSizing: 'border-box', zIndex: 0,
       }} />
-      {(['5m', '15m'] as const).map(v => {
+      {INTERVALS.map(v => {
         const active = interval === v
         return (
           <div

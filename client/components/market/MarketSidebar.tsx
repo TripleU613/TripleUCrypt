@@ -6,6 +6,7 @@ import { AskTile } from './AskTile.js'
 import { RollDigits } from '../shared/RollDigits.js'
 import { playFx } from '../../lib/fx.js'
 import { useCountdown } from '../../lib/useCountdown.js'
+import { intervalSecs } from '../../lib/intervals.js'
 import { FONT, C, D, SP, SZ, FS, FW } from '../../constants/index.js'
 
 // ── Skeleton ──────────────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ function MarketCard({ w, isActive }: { w: Record<string, unknown>; isActive: boo
   const dnToken = String(w['dn_token'] ?? '')
   const endTs = Number(w['end_ts'] ?? 0)
   const result = String(w['result'] ?? '')
-  const intervalS = interval === '15m' ? 900 : 300
+  const intervalS = intervalSecs(interval)
   const coinSrc = `/coins/${asset.toLowerCase()}.svg`
   const last3 = (useStore(s => s.window_results)[slug] ?? []).slice(0, 3)
 
@@ -135,8 +136,11 @@ function MarketCard({ w, isActive }: { w: Record<string, unknown>; isActive: boo
         {last3Row}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
           {upToken && !stale ? (
+            // h:mm:ss (1h/1d) is 3 glyphs wider than m:ss and overflowed the cell
+            // at H3 — step the size down instead of clipping the countdown.
             <RollDigits text={timerStr}
-              style={{ fontSize: FS.H3, fontWeight: FW.BLACK, fontFamily: FONT.TIME, letterSpacing: '0.02em', lineHeight: 1,
+              style={{ fontSize: timerStr.length > 5 ? FS.SM : FS.H3,
+                       fontWeight: FW.BLACK, fontFamily: FONT.TIME, letterSpacing: '0.02em', lineHeight: 1,
                        color: secsLeft < 30 ? C.GOLD : 'var(--tc-white)' }} />
           ) : (
             <span style={{ color: 'var(--tc-dim2)', fontSize: FS.XL, fontWeight: FW.BLACK, fontFamily: FONT.TIME }}>—</span>

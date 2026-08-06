@@ -48,6 +48,30 @@ describe('computeCountdown', () => {
     expect(computeCountdown(NOW - FIVE_MIN - 1, FIVE_MIN, NOW).text).toBe('—')
   })
 
+  it('grows an hours field for the 1h/1d windows', () => {
+    const c = computeCountdown(NOW + 3661, 3600, NOW)        // 1h01m01s
+    expect(c.hh).toBe('1')
+    expect(c.mm).toBe('01')                                   // padded once hours show
+    expect(c.ss).toBe('01')
+    expect(c.text).toBe('1:01:01')
+  })
+
+  it('counts a whole day down without overflowing into minutes', () => {
+    const DAY = 86400
+    expect(computeCountdown(NOW + DAY, DAY, NOW).text).toBe('24:00:00')
+    expect(computeCountdown(NOW + 3600, DAY, NOW).text).toBe('1:00:00')
+    // One second under the hour drops back to m:ss — no stray '0:' prefix.
+    const c = computeCountdown(NOW + 3599, DAY, NOW)
+    expect(c.hh).toBe('0')
+    expect(c.text).toBe('59:59')
+  })
+
+  it('goes stale a full day past the end of a 1d window', () => {
+    const DAY = 86400
+    expect(computeCountdown(NOW - DAY, DAY, NOW).stale).toBe(false)
+    expect(computeCountdown(NOW - DAY - 1, DAY, NOW).stale).toBe(true)
+  })
+
   it('honours a 15m interval for the stale cutoff', () => {
     const FIFTEEN = 900
     expect(computeCountdown(NOW - 600, FIFTEEN, NOW).stale).toBe(false)  // within 15m

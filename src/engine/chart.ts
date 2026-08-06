@@ -4,6 +4,7 @@ import { pollSleep } from './performance.js'
 import { bus } from '../bus.js'
 import type { OHLCBar } from '../types.js'
 import { loadSettings as ioLoadSettings, saveSettings as ioSaveSettings } from '../io/settings.js'
+import { INTERVALS } from '../intervals.js'
 import { guardSocket } from '../io/ws-guard.js'
 
 // ── IO imports ────────────────────────────────────────────────────────────────
@@ -87,6 +88,10 @@ export function fineWindowCandles(asset: string, startTs: number, endTs: number)
   }
   if (byBucket.size < 6) return []   // too sparse to be worth it — use 1m bars
   const keys = [...byBucket.keys()].sort((a, b) => a - b)
+  // …and the samples must actually COVER the window. The tick buffer only holds
+  // ~2h, so a 1d window would otherwise return a dense series spanning just its
+  // final two hours, which the canvas would then stretch across the whole span.
+  if (keys[keys.length - 1] - keys[0] < span * 0.8) return []
   const bars: number[][] = []
   let prevClose = NaN
   for (const k of keys) {
@@ -223,7 +228,11 @@ export function computeChartTarget(): number {
   // (c) per-window captured open
   const wins = state.windows ?? []
   if (wins.length > 0) {
-    const active = wins[0] as Record<string, unknown>
+    // Index by active_window, NOT wins[0]. wins[0] is whatever discovery
+    // returned first (BTC 5m), so on any other selection this looked up the
+    // wrong window's captured open and reported a wrong strike. Every sibling
+    // site already reads active_window (see engine/windows.ts:381).
+    const active = (wins[state.active_window ?? 0] ?? wins[0]) as Record<string, unknown>
     const activeKey = `${String(active['slug'] ?? '')}@${Number(active['event_start_ts'] ?? 0)}`
     const op = (state.window_opens ?? {})[activeKey] ?? 0
     if (op > 0) return op
@@ -257,9 +266,11 @@ function _publishCandles(asset: string, tf: string): void {
 }
 
 /**
- * Fetch the 1-minute price candles spanning a single window [startTs, endTs)
- * — used for the hindsight canvas so a past 5m/15m window shows its full
- * intra-window price action end-to-end, not one interval-sized bar.
+ * Fetch the price candles spanning a single window [startTs, endTs) — used for
+ * the hindsight canvas so a past window shows its full intra-window price action
+ * end-to-end, not one interval-sized bar. Bar size follows the span (see
+ * kraken.rangeGranularityMins): 1-minute for 5m/15m/1h, coarser for 1d, where
+ * 1440 one-minute bars would be both truncated by Kraken and pointless.
  */
 const _windowCandleCache = new Map<string, unknown[][]>()
 
@@ -324,9 +335,10 @@ async function _loadCandlesForAsset(asset: string, tf: string): Promise<void> {
 
 export async function runLoadCandles(signal: AbortSignal): Promise<void> {
   const assets = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'HYPE', 'BNB']
-  // Only the 5m/15m windows are ever charted — fetching 1h/4h/1d for every
-  // asset was wasted load that tripped Kraken's rate limit.
-  const tfs = ['5m', '15m']
+  // One timeframe per tradable interval and nothing more — 4h/1w etc. would be
+  // wasted load that trips Kraken's rate limit. 28 calls per sweep at the 220ms
+  // stagger below is ~6s of gentle traffic; the active pair is fetched first.
+  const tfs = INTERVALS
 
   // Active asset/interval first so the visible chart fills fast, then the rest.
   const loadActive = async () => {

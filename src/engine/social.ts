@@ -5,6 +5,7 @@ import { bus } from '../bus.js'
 import { notify } from './notify.js'
 import { guardSocket } from '../io/ws-guard.js'
 import { ingestRtdsFrame } from './activity.js'
+import { intervalSecs } from '../intervals.js'
 
 // ── IO imports ────────────────────────────────────────────────────────────────
 
@@ -282,20 +283,21 @@ async function _pollResults(): Promise<void> {
   const slotResults: Record<string, string> = { ...(state.slot_results ?? {}) }
   const windowResultsMap: Record<string, string[]> = {}
   const allResults: Record<string, unknown>[] = []
+  const resultsBySlug: Record<string, Record<string, unknown>[]> = {}
 
   await Promise.allSettled(Array.from(slugSet).map(async (slug) => {
     try {
       // Find this window's interval for computing startTs + the history step.
       const win = windows.find(w => (w['slug'] as string) === slug) as Record<string, unknown> | undefined
       const interval = win ? String(win['interval'] ?? '5m') : '5m'
-      const intervalSecs = interval === '15m' ? 900 : 300
+      const winSecs = intervalSecs(interval)
       const anchorEnd = Number(win?.['end_ts'] ?? 0)   // real boundary → aligned slugs
 
       // fetchRecentResults queries the *base* slug with closed=true, which returns
       // nothing (each window is a distinct timestamped slug). fetchWindowHistory
       // reconstructs the per-window boundary slugs and returns real winners.
       const results = await _callPm<Record<string, unknown>[]>(
-        'fetchWindowHistory', slug, intervalSecs / 60, 12, anchorEnd)
+        'fetchWindowHistory', slug, winSecs / 60, 12, anchorEnd)
       if (!results) return
 
       // Gamma only keeps ~1 past window queryable, so accumulate over time:
@@ -307,12 +309,13 @@ async function _pollResults(): Promise<void> {
         .map(r => ({ t: Number(r['end_ts'] ?? 0), w: r['winner'] as string }))
       const perSlug = recordResults(slug, seen, 3)
       if (perSlug.length) windowResultsMap[slug] = perSlug
+      resultsBySlug[slug] = results
 
       for (const r of results) {
         const endTs = Number(r['end_ts'] ?? 0)
         const winner = r['winner'] as string | undefined
         if (endTs && (winner === 'UP' || winner === 'DOWN')) {
-          const startTs = endTs - intervalSecs
+          const startTs = endTs - winSecs
           slotResults[String(startTs)] = winner
         }
         allResults.push(r)
@@ -340,15 +343,20 @@ async function _pollResults(): Promise<void> {
   try {
     const { put: putHindsight, has: hasHindsight } = await import('../io/hindsight.js')
     const { fineWindowCandles } = await import('./chart.js')
-    const asset = state.chart_asset ?? 'BTC'
-    const interval = state.interval ?? '5m'
-    const intervalSecs = interval === '15m' ? 900 : 300
+    // Only the SELECTED window's own results may be snapshotted. allResults mixes
+    // every asset and interval, and a 1d window's start lands on a 300s boundary
+    // too — keying its snapshot under state.interval would freeze a day-long chart
+    // into a 5-minute slot.
+    const sel = (windows[state.active_window ?? 0] ?? windows[0]) as Record<string, unknown>
+    const asset = String(sel['asset'] ?? state.chart_asset ?? 'BTC')
+    const interval = String(sel['interval'] ?? state.interval ?? '5m')
+    const winSecs = intervalSecs(interval)
 
-    for (const r of allResults) {
+    for (const r of resultsBySlug[String(sel['slug'] ?? '')] ?? []) {
       const endTs = Number(r['end_ts'] ?? 0)
       const winner = r['winner'] as string | undefined
       if (!endTs || !winner) continue
-      const startTs = endTs - intervalSecs
+      const startTs = endTs - winSecs
       if (!hasHindsight(asset, interval, startTs)) {
         putHindsight(asset, interval, startTs, {
           outcome: winner === 'YES' ? 'UP' : 'DOWN',
@@ -392,18 +400,21 @@ export async function runRefreshSlotResults(): Promise<void> {
   const windows = state.windows ?? []
   if (!windows.length) return
 
-  const w = windows[0] as Record<string, unknown>
+  // The SELECTED window's slug/interval — the slot strip it feeds shows that
+  // window's boundaries, so anchoring on windows[0] would step a 1h/1d strip in
+  // 5-minute slots.
+  const w = (windows[state.active_window ?? 0] ?? windows[0]) as Record<string, unknown>
   const slug = String(w['slug'] ?? '')
   if (!slug) return
 
   const interval = String(w['interval'] ?? '5m')
-  const intervalSecs = interval === '15m' ? 900 : 300
+  const winSecs = intervalSecs(interval)
 
   try {
     // fetchWindowHistory reconstructs per-window slugs (fetchRecentResults on the
     // base slug returns nothing); winner is already "UP" | "DOWN" | "?".
     const results = await _callPm<Record<string, unknown>[]>(
-      'fetchWindowHistory', slug, intervalSecs / 60, 12)
+      'fetchWindowHistory', slug, winSecs / 60, 12)
     if (!results) return
 
     const map: Record<string, string> = { ...(state.slot_results ?? {}) }
@@ -413,7 +424,7 @@ export async function runRefreshSlotResults(): Promise<void> {
       const endTs = Number(r['end_ts'] ?? 0)
       const winner = r['winner'] as string | undefined
       if (endTs && (winner === 'UP' || winner === 'DOWN')) {
-        const startTs = endTs - intervalSecs
+        const startTs = endTs - winSecs
         map[String(startTs)] = winner
         recent.push(r)
       }

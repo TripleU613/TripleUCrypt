@@ -5,6 +5,7 @@
  */
 import { Pool } from "undici";
 import type { MarketWindow, MarketSlug, TradeRow, HolderRow, CommentRow, PositionRow } from "../types.js";
+import { intervalSecs } from "../intervals.js";
 
 // ── URL Constants ─────────────────────────────────────────────────────────────
 
@@ -33,6 +34,44 @@ export const MARKET_SLUGS: MarketSlug[] = [
   { asset: "BNB",  interval: "5m",  baseSlug: "bnb-updown-5m"  },
   { asset: "BNB",  interval: "15m", baseSlug: "bnb-updown-15m" },
 ];
+
+// ── Series slugs (1h / 1d) ────────────────────────────────────────────────────
+
+/**
+ * Hourly and daily up/down markets do NOT use the epoch-suffixed slug scheme
+ * above. Their per-window slugs are human-readable ET dates —
+ *   hourly: bitcoin-up-or-down-august-6-2026-11am-et
+ *   daily:  bitcoin-up-or-down-on-august-6-2026        ("on-" only for daily)
+ * — which cannot be built reliably (full asset name, month names, no zero
+ * padding, am/pm, and US-Eastern with DST). So instead of constructing slugs we
+ * walk the recurring SERIES: /series?slug=… yields an id, /events?series_id=…
+ * lists every window with its markets[] (slug, endDate, clobTokenIds…).
+ */
+const SERIES_RECURRENCE: Record<string, string> = { "1h": "hourly", "1d": "daily" };
+
+/** Recurrence-series intervals, in the order they should appear after 5m/15m. */
+export const SERIES_INTERVALS = ["1h", "1d"] as const;
+
+const SERIES_ASSETS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"];
+
+export function seriesSlugFor(asset: string, interval: string): string {
+  return `${asset.toLowerCase()}-up-or-down-${SERIES_RECURRENCE[interval] ?? interval}`;
+}
+
+/**
+ * The (asset, interval) pairs we LOOK for on the series path. Coverage is not
+ * uniform — SOL has no hourly/daily and DOGE has no daily — so a pair whose
+ * series doesn't resolve simply produces no window (never a dead card). Nothing
+ * here is hardcoded per asset: the lookup decides.
+ */
+export const SERIES_SLUGS: MarketSlug[] = SERIES_ASSETS.flatMap((asset) =>
+  SERIES_INTERVALS.map((interval) => ({ asset, interval, baseSlug: seriesSlugFor(asset, interval) })),
+);
+
+/** True for a slug that addresses a recurrence series rather than one window. */
+export function isSeriesSlug(slug: string): boolean {
+  return /-up-or-down-(hourly|daily)$/.test(slug);
+}
 
 const _STRIKE_RE = /\$[\d,]+(?:\.\d+)?/;
 
@@ -193,15 +232,101 @@ interface RawMarket {
   }>;
 }
 
+/** Window fields that don't depend on which (asset, interval) asked for them. */
+type BaseWindow = Omit<MarketWindow, "asset" | "interval" | "slug" | "current_price" | "secs_str">;
+
+/** Parse clobTokenIds (string-encoded JSON array or a real array) → [up, dn]. */
+function _tokensOf(mkt: RawMarket): string[] {
+  try {
+    if (typeof mkt.clobTokenIds === "string") return JSON.parse(mkt.clobTokenIds) as string[];
+    if (Array.isArray(mkt.clobTokenIds)) return mkt.clobTokenIds;
+  } catch { /* malformed — treat as no tokens */ }
+  return [];
+}
+
+function _seriesIdOf(mkt: RawMarket): string {
+  try {
+    const sers = (mkt.events ?? [])[0]?.series ?? [];
+    return sers.length ? String(sers[0].id ?? "") : "";
+  } catch {
+    return "";
+  }
+}
+
+/** m:ss, or h:mm:ss once a window is an hour or longer (1h / 1d). */
+function _secsStr(secs: number): string {
+  if (secs <= 0) return "—";
+  const h = Math.trunc(secs / 3600);
+  const m = Math.trunc((secs % 3600) / 60);
+  const s = secs % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Normalise one raw Gamma market into the shared half of a MarketWindow.
+ * Prices are left at 0 — the caller fills them from /book (or the WS does).
+ * `seriesIdFallback` covers the series path, where the market is nested inside
+ * the event we already know the series id of and carries no events[] of its own.
+ */
+function _baseWindow(mkt: RawMarket, seriesIdFallback = ""): BaseWindow | null {
+  const toks = _tokensOf(mkt);
+  if (toks.length < 2) return null;
+
+  let endTs = 0;
+  let secs = 0;
+  const endDt = new Date(mkt.endDate ?? "");
+  if (!isNaN(endDt.getTime())) {
+    endTs = Math.trunc(endDt.getTime() / 1000);
+    secs = Math.max(0, Math.trunc((endDt.getTime() - Date.now()) / 1000));
+  }
+
+  let eventStartTs = 0;
+  const est = mkt.eventStartTime ?? "";
+  if (est) {
+    const t = new Date(est).getTime();
+    if (!isNaN(t)) eventStartTs = Math.trunc(t / 1000);
+  }
+
+  const question = mkt.question ?? "";
+  return {
+    up_token:       toks[0],
+    dn_token:       toks[1],
+    up_ask:         0,
+    dn_ask:         0,
+    combined:       0,
+    secs_left:      secs,
+    end_ts:         endTs,
+    question,
+    strike:         parseStrike(question),
+    event_start_ts: eventStartTs,
+    condition_id:   mkt.conditionId ?? "",
+    series_id:      _seriesIdOf(mkt) || seriesIdFallback,
+  };
+}
+
+/** Best asks (cents) for a token pair, straight off the CLOB REST book. */
+async function _fetchAsks(upId: string, dnId: string): Promise<[number, number]> {
+  const clobPool = _clobClient();
+  const [upBook, dnBook] = await Promise.all([
+    _getJson(clobPool, `/book?token_id=${upId}`),
+    _getJson(clobPool, `/book?token_id=${dnId}`),
+  ]);
+  const [upAsk] = bookToCents((upBook as ClobBookRaw) ?? {});
+  const [dnAsk] = bookToCents((dnBook as ClobBookRaw) ?? {});
+  return [upAsk, dnAsk];
+}
+
 async function _discoverActiveWindows(): Promise<RawMarket[]> {
   const now = _nowSec();
-  const b5  = Math.trunc(now / 300) * 300;
-  const b15 = Math.trunc(now / 900) * 900;
   const pool = getHttpClient();
 
-  const slugs = MARKET_SLUGS.map(({ interval, baseSlug }) =>
-    `${baseSlug}-${interval === "5m" ? b5 : b15}`,
-  );
+  // Each window's slug is suffixed with the boundary its interval is aligned to.
+  const slugs = MARKET_SLUGS.map(({ interval, baseSlug }) => {
+    const step = intervalSecs(interval);
+    return `${baseSlug}-${Math.trunc(now / step) * step}`;
+  });
 
   const results = await Promise.allSettled(
     slugs.map(async (slug) => {
@@ -222,11 +347,10 @@ async function _discoverActiveWindows(): Promise<RawMarket[]> {
 }
 
 /**
- * Discover all active UP/DOWN windows.
+ * Discover the active UP/DOWN windows on the epoch-slug path (5m / 15m).
  * Returns one MarketWindow per MARKET_SLUGS entry (placeholder if no live window found).
- * withBooks=false skips CLOB /book REST calls; the WS fills prices within ~1s.
  */
-export async function fetchAllWindows(withBooks = true): Promise<MarketWindow[]> {
+async function _fetchEpochWindows(withBooks: boolean): Promise<MarketWindow[]> {
   const rawMarkets = await _discoverActiveWindows();
 
   // Map base slug → raw market
@@ -243,99 +367,40 @@ export async function fetchAllWindows(withBooks = true): Promise<MarketWindow[]>
   async function enrich(
     baseSlug: string,
     mkt: RawMarket,
-  ): Promise<[string, Omit<MarketWindow, "asset" | "interval" | "slug" | "current_price" | "secs_str"> | null]> {
-    let rawTokens: string[] = [];
-    try {
-      if (typeof mkt.clobTokenIds === "string") {
-        rawTokens = JSON.parse(mkt.clobTokenIds) as string[];
-      } else if (Array.isArray(mkt.clobTokenIds)) {
-        rawTokens = mkt.clobTokenIds;
-      }
-    } catch { /* skip */ }
-
-    if (rawTokens.length < 2) return [baseSlug, null];
-    const [upId, dnId] = rawTokens;
-
-    let upAsk = 0;
-    let dnAsk = 0;
+  ): Promise<[string, BaseWindow | null]> {
+    const base = _baseWindow(mkt);
+    if (!base) return [baseSlug, null];
 
     if (withBooks) {
-      const clobPool = _clobClient();
-      const [upBook, dnBook] = await Promise.all([
-        _getJson(clobPool, `/book?token_id=${upId}`),
-        _getJson(clobPool, `/book?token_id=${dnId}`),
-      ]);
-      [upAsk] = bookToCents(upBook as ClobBookRaw ?? {});
-      [dnAsk] = bookToCents(dnBook as ClobBookRaw ?? {});
+      const [upAsk, dnAsk] = await _fetchAsks(base.up_token, base.dn_token);
+      base.up_ask = upAsk;
+      base.dn_ask = dnAsk;
+      base.combined = Math.round((upAsk + dnAsk) * 10) / 10;
     }
-
-    let endTs = 0;
-    let secs = 0;
-    try {
-      const endDt = new Date(mkt.endDate ?? "");
-      if (!isNaN(endDt.getTime())) {
-        endTs = Math.trunc(endDt.getTime() / 1000);
-        secs = Math.max(0, Math.trunc((endDt.getTime() - Date.now()) / 1000));
-      }
-    } catch { /* skip */ }
-
-    let seriesId = "";
-    try {
-      const evs = mkt.events ?? [];
-      if (evs.length) {
-        const sers = evs[0].series ?? [];
-        if (sers.length) seriesId = String(sers[0].id ?? "");
-      }
-    } catch { /* skip */ }
-
-    let eventStartTs = 0;
-    try {
-      const est = mkt.eventStartTime ?? "";
-      if (est) eventStartTs = Math.trunc(new Date(est).getTime() / 1000);
-    } catch { /* skip */ }
-
-    const question = mkt.question ?? "";
-    return [
-      baseSlug,
-      {
-        up_token:       upId,
-        dn_token:       dnId,
-        up_ask:         upAsk,
-        dn_ask:         dnAsk,
-        combined:       Math.round((upAsk + dnAsk) * 10) / 10,
-        secs_left:      secs,
-        end_ts:         endTs,
-        question,
-        strike:         parseStrike(question),
-        event_start_ts: eventStartTs,
-        condition_id:   mkt.conditionId ?? "",
-        series_id:      seriesId,
-      },
-    ];
+    return [baseSlug, base];
   }
 
-  const enriched = new Map<string, ReturnType<typeof enrich> extends Promise<[string, infer V]> ? V : never>();
+  const enriched = new Map<string, BaseWindow>();
   const pairs = await Promise.allSettled(
     Array.from(slugToMarket.entries()).map(([s, m]) => enrich(s, m)),
   );
   for (const r of pairs) {
     if (r.status === "fulfilled") {
       const [baseSlug, w] = r.value;
-      if (w) enriched.set(baseSlug, w as NonNullable<typeof w>);
+      if (w) enriched.set(baseSlug, w);
     }
   }
 
   return MARKET_SLUGS.map(({ asset, interval, baseSlug }) => {
     const w = enriched.get(baseSlug);
     if (w) {
-      const secs = w.secs_left;
       return {
         ...w,
         asset,
         interval,
         slug:          baseSlug,
         current_price: 0,
-        secs_str:      secs > 0 ? `${Math.trunc(secs / 60)}:${String(secs % 60).padStart(2, "0")}` : "—",
+        secs_str:      _secsStr(w.secs_left),
       } as MarketWindow;
     }
     return {
@@ -358,6 +423,141 @@ export async function fetchAllWindows(withBooks = true): Promise<MarketWindow[]>
       current_price: 0,
     } as MarketWindow;
   });
+}
+
+// ── Series discovery (1h / 1d) ────────────────────────────────────────────────
+
+/** One /events row: the window, carrying the tradable market(s) inside it. */
+export interface SeriesEvent {
+  slug?: string;
+  markets?: RawMarket[];
+}
+
+// Series ids never change, so resolve each slug once and keep it. A MISS is
+// cached too — but only briefly, so an asset that gains an hourly/daily series
+// later (SOL has neither today) starts producing a card without a restart.
+const _seriesIds = new Map<string, { id: string; ts: number }>();
+const SERIES_HIT_TTL_MS  = 12 * 3600_000;
+const SERIES_MISS_TTL_MS = 10 * 60_000;
+
+/** How many events to pull per series — enough to cover the open windows. */
+const SERIES_EVENT_LIMIT = 12;
+
+/** Resolve a series slug → id, cached. Empty string = no such series. */
+export async function resolveSeriesId(seriesSlug: string): Promise<string> {
+  const hit = _seriesIds.get(seriesSlug);
+  const now = Date.now();
+  if (hit && now - hit.ts < (hit.id ? SERIES_HIT_TTL_MS : SERIES_MISS_TTL_MS)) return hit.id;
+
+  let id = "";
+  try {
+    const d = await _getJson(getHttpClient(), `/series?slug=${encodeURIComponent(seriesSlug)}&limit=1`);
+    if (Array.isArray(d) && d.length) id = String((d[0] as Record<string, unknown>)["id"] ?? "");
+  } catch { /* leave empty — retried after the miss TTL */ }
+  _seriesIds.set(seriesSlug, { id, ts: now });
+  return id;
+}
+
+/** Test seam: drop everything memoised about series (ids + last live windows). */
+export function _clearSeriesCaches(): void {
+  _seriesIds.clear();
+  _lastSeriesWin.clear();
+}
+
+/**
+ * Pick the LIVE window out of a series' events.
+ *
+ * /events?closed=false is not a live filter: it also returns long-past events
+ * whose markets have already resolved (a May window still shows up in August).
+ * The live window is the tradable market with the earliest end in the future.
+ */
+export function pickLiveSeriesMarket(events: SeriesEvent[], nowSec: number): RawMarket | null {
+  let best: RawMarket | null = null;
+  let bestEnd = Infinity;
+  for (const ev of events) {
+    for (const mkt of ev.markets ?? []) {
+      if (mkt.closed === true || mkt.active === false) continue;
+      if (_tokensOf(mkt).length < 2) continue;
+      const t = new Date(mkt.endDate ?? "").getTime();
+      if (isNaN(t)) continue;
+      const endTs = Math.trunc(t / 1000);
+      if (endTs <= nowSec) continue;
+      if (endTs < bestEnd) { bestEnd = endTs; best = mkt; }
+    }
+  }
+  return best;
+}
+
+// Last live window seen per series. A single throttled/failed /events call would
+// otherwise drop that card for a whole poll, and cards blinking in and out of the
+// sidebar reads as breakage — so reuse the last one until it actually expires.
+const _lastSeriesWin = new Map<string, BaseWindow>();
+
+async function _fetchSeriesWindows(withBooks: boolean): Promise<MarketWindow[]> {
+  const pool = getHttpClient();
+  const now = _nowSec();
+
+  const results = await Promise.allSettled(
+    SERIES_SLUGS.map(async ({ asset, interval, baseSlug }): Promise<MarketWindow | null> => {
+      const seriesId = await resolveSeriesId(baseSlug);
+      if (!seriesId) return null;   // no series for this asset+recurrence → no card
+
+      const d = await _getJson(
+        pool,
+        `/events?series_id=${encodeURIComponent(seriesId)}&limit=${SERIES_EVENT_LIMIT}&closed=false`,
+      );
+      const mkt = pickLiveSeriesMarket(Array.isArray(d) ? (d as SeriesEvent[]) : [], now);
+      let base = mkt ? _baseWindow(mkt, seriesId) : null;
+      if (base) {
+        _lastSeriesWin.set(baseSlug, base);
+      } else {
+        // Nothing live this poll: hold the previous window while it's still
+        // running, and drop it for good once its end has passed.
+        const prev = _lastSeriesWin.get(baseSlug);
+        if (!prev || prev.end_ts <= now) { _lastSeriesWin.delete(baseSlug); return null; }
+        base = { ...prev, secs_left: Math.max(0, prev.end_ts - now) };
+      }
+
+      if (withBooks) {
+        const [upAsk, dnAsk] = await _fetchAsks(base.up_token, base.dn_token);
+        base.up_ask = upAsk;
+        base.dn_ask = dnAsk;
+        base.combined = Math.round((upAsk + dnAsk) * 10) / 10;
+      }
+
+      return {
+        ...base,
+        asset,
+        interval,
+        // The series slug is this market's stable identity across rollovers (the
+        // per-window slug changes every hour/day), so it plays the same role the
+        // baseSlug does for 5m/15m: selection key, results key, history anchor.
+        slug:          baseSlug,
+        current_price: 0,
+        secs_str:      _secsStr(base.secs_left),
+      } as MarketWindow;
+    }),
+  );
+
+  return results.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
+}
+
+/**
+ * Discover all active UP/DOWN windows across every interval.
+ *
+ * 5m/15m come from the epoch-suffixed slug path and always yield an entry (a
+ * placeholder when no live window resolved); 1h/1d come from the series path and
+ * only appear when a live window exists — an asset with no hourly/daily series
+ * must not render a dead card. 5m/15m stay FIRST so windows[0] keeps meaning the
+ * same market it always did.
+ * withBooks=false skips CLOB /book REST calls; the WS fills prices within ~1s.
+ */
+export async function fetchAllWindows(withBooks = true): Promise<MarketWindow[]> {
+  const [epoch, series] = await Promise.all([
+    _fetchEpochWindows(withBooks),
+    _fetchSeriesWindows(withBooks),
+  ]);
+  return [...epoch, ...series];
 }
 
 // ── Order book ────────────────────────────────────────────────────────────────
@@ -402,6 +602,18 @@ export interface WindowResult {
   winner: "UP" | "DOWN" | "?";
 }
 
+/** Resolved side from outcomePrices ([UP, DOWN]); >0.9 ⇒ that side won. */
+function _winnerOf(mkt: RawMarket): "UP" | "DOWN" | "?" {
+  try {
+    const prices = JSON.parse(mkt.outcomePrices ?? "[]") as string[];
+    if (prices.length >= 2) {
+      if (parseFloat(prices[0]) > 0.9) return "UP";
+      if (parseFloat(prices[1]) > 0.9) return "DOWN";
+    }
+  } catch { /* unresolved or malformed */ }
+  return "?";
+}
+
 /**
  * Fetch recently closed markets for a slug and determine UP/DOWN winner.
  * Returns [{end_ts, end_label, winner}] sorted newest first.
@@ -427,19 +639,7 @@ export async function fetchRecentResults(
       if (isNaN(endDt.getTime())) continue;
       const endTs  = Math.trunc(endDt.getTime() / 1000);
       const endLbl = _utcLabel(endDt);
-
-      let winner: "UP" | "DOWN" | "?" = "?";
-      try {
-        const prices = JSON.parse(mkt.outcomePrices ?? "[]") as string[];
-        if (prices.length >= 2) {
-          const pUp = parseFloat(prices[0]);
-          const pDn = parseFloat(prices[1]);
-          if (pUp > 0.9) winner = "UP";
-          else if (pDn > 0.9) winner = "DOWN";
-        }
-      } catch { /* skip */ }
-
-      results.push({ end_ts: endTs, end_label: endLbl, winner });
+      results.push({ end_ts: endTs, end_label: endLbl, winner: _winnerOf(mkt) });
     } catch { /* skip */ }
   }
 
@@ -458,6 +658,8 @@ export async function fetchWindowHistory(
   anchorEndTs = 0,
 ): Promise<WindowResult[]> {
   if (!baseSlug) return [];
+  // 1h/1d windows have no reconstructable slugs — walk the series' closed events.
+  if (isSeriesSlug(baseSlug)) return fetchSeriesHistory(baseSlug, limit);
   const pool = getHttpClient();
   const step = Math.max(60, intervalMins * 60);
   const now  = _nowSec();
@@ -480,22 +682,90 @@ export async function fetchWindowHistory(
     try {
       const endDt = new Date(m.endDate ?? "");
       if (isNaN(endDt.getTime())) continue;
-      let winner: "UP" | "DOWN" | "?" = "?";
-      try {
-        const prices = JSON.parse(m.outcomePrices ?? "[]") as string[];
-        if (prices.length >= 2) {
-          if (parseFloat(prices[0]) > 0.9) winner = "UP";
-          else if (parseFloat(prices[1]) > 0.9) winner = "DOWN";
-        }
-      } catch { /* skip */ }
       out.push({
         end_ts:    Math.trunc(endDt.getTime() / 1000),
         end_label: _utcLabel(endDt),
-        winner,
+        winner:    _winnerOf(m),
       });
     } catch { /* skip */ }
   }
   out.sort((a, b) => b.end_ts - a.end_ts);
+  return out;
+}
+
+/**
+ * Resolved results for the most recent closed windows of a recurrence series
+ * (1h / 1d). The per-window slugs can't be reconstructed, so ask the series for
+ * its closed events newest-first and read each market's outcome.
+ */
+export async function fetchSeriesHistory(
+  seriesSlug: string,
+  limit = 8,
+): Promise<WindowResult[]> {
+  const seriesId = await resolveSeriesId(seriesSlug);
+  if (!seriesId) return [];
+  const events = await _fetchSeriesEvents(seriesId, true, limit);
+
+  const out: WindowResult[] = [];
+  for (const ev of events) {
+    for (const mkt of ev.markets ?? []) {
+      const endDt = new Date(mkt.endDate ?? "");
+      if (isNaN(endDt.getTime())) continue;
+      out.push({
+        end_ts:    Math.trunc(endDt.getTime() / 1000),
+        end_label: _utcLabel(endDt),
+        winner:    _winnerOf(mkt),
+      });
+    }
+  }
+  out.sort((a, b) => b.end_ts - a.end_ts);
+  return out.slice(0, limit);
+}
+
+/** One page of a series' events, newest-first when asking for closed ones. */
+async function _fetchSeriesEvents(
+  seriesId: string,
+  closed: boolean,
+  limit: number,
+): Promise<SeriesEvent[]> {
+  const order = closed ? "&order=endDate&ascending=false" : "";
+  const d = await _getJson(
+    getHttpClient(),
+    `/events?series_id=${encodeURIComponent(seriesId)}&limit=${limit}&closed=${closed}${order}`,
+  );
+  return Array.isArray(d) ? (d as SeriesEvent[]) : [];
+}
+
+/** fetchWindowMeta for a recurrence series: find the window ending at boundaryTs. */
+async function _fetchSeriesWindowMeta(
+  seriesSlug: string,
+  boundaryTs: number,
+): Promise<{ token: string; condition_id: string; series_id: string; outcome: string; closed: boolean }> {
+  const out = { token: "", condition_id: "", series_id: "", outcome: "", closed: false };
+  const seriesId = await resolveSeriesId(seriesSlug);
+  if (!seriesId) return out;
+  // A viewed slot is usually past (closed), but the slot strip also walks
+  // forward — check both pages rather than guessing which one holds it.
+  const pages = await Promise.allSettled([
+    _fetchSeriesEvents(seriesId, true, 24),
+    _fetchSeriesEvents(seriesId, false, SERIES_EVENT_LIMIT),
+  ]);
+  for (const p of pages) {
+    if (p.status !== "fulfilled") continue;
+    for (const ev of p.value) {
+      for (const mkt of ev.markets ?? []) {
+        const t = new Date(mkt.endDate ?? "").getTime();
+        if (isNaN(t) || Math.trunc(t / 1000) !== boundaryTs) continue;
+        out.token = _tokensOf(mkt)[0] ?? "";
+        out.condition_id = mkt.conditionId ?? "";
+        out.series_id = seriesId;
+        out.closed = mkt.closed === true;
+        const w = _winnerOf(mkt);
+        if (w !== "?") out.outcome = w;
+        return out;
+      }
+    }
+  }
   return out;
 }
 
@@ -509,6 +779,9 @@ export async function fetchWindowMeta(
 ): Promise<{ token: string; condition_id: string; series_id: string; outcome: string; closed: boolean }> {
   const out = { token: "", condition_id: "", series_id: "", outcome: "", closed: false };
   if (!baseSlug) return out;
+  if (isSeriesSlug(baseSlug)) {
+    try { return await _fetchSeriesWindowMeta(baseSlug, boundaryTs); } catch { return out; }
+  }
   const pool = getHttpClient();
   try {
     const d = await _getJson(
