@@ -9,6 +9,7 @@ import { useStore, toast } from '../store.js'
 import { call } from '../api.js'
 import { browserBuy, browserSell, ensureBrowserApprovals, refreshBrowserPortfolio, slippageCapCents, slippageFloorCents, freshHeldSize } from '../buses/ClobTrade.js'
 import { ensurePolygon } from '../buses/MetaMaskBus.js'
+import { auditBrowserFill } from './auditFill.js'
 
 function isBrowserMode(): boolean {
   const s = useStore.getState()
@@ -69,7 +70,17 @@ export async function placeBuy(side: string, sizeOverride?: number): Promise<voi
     if (!appr.ok) { toast(appr.error || 'Approve trading first', 'error'); return }
     toast('Confirm the order in your wallet…', 'log')
     const fill = await browserBuy(addr, tokenId, usd, maxCents)
-    if (fill.ok) { toast(`Bought ${fill.shares.toFixed(2)} ${side} @ ${fill.price}¢`, 'log'); await refreshBrowserPortfolio(addr) }
+    if (fill.ok) {
+      toast(`Bought ${fill.shares.toFixed(2)} ${side} @ ${fill.price}¢`, 'log')
+      await refreshBrowserPortfolio(addr)
+      // Browser-signed fills never touch the server, so without this they would
+      // leave NO durable record and get NO verification — while server-mode
+      // fills get both. Same guarantees for both signers.
+      void auditBrowserFill('buy', {
+        asset: useStore.getState().chart_asset, direction: side, token: tokenId,
+        shares: fill.shares, price_cents: fill.price, usd: fill.usd, ref: fill.orderId,
+      }, addr, fill.shares, 'atLeast')
+    }
     else toast(fill.error || 'Order not filled', 'error')
   } catch (e) {
     console.error('[trade] buy error', e)
@@ -134,6 +145,13 @@ export async function placeSell(token: string, shares: number, serverArg: string
         : `Sold ${fill.shares.toFixed(2)} shares @ ${fill.price}¢`
       toast(msg, 'log')
       await refreshBrowserPortfolio(addr)
+      // See the buy path: same audit + verification for browser-signed sells.
+      // Expect the holding to be at most (what we had) - (what sold).
+      void auditBrowserFill('sell', {
+        asset: useStore.getState().chart_asset, token,
+        shares: fill.shares, price_cents: fill.price, usd: fill.usd,
+        ref: fill.orderId, partial: fill.partial,
+      }, addr, Math.max(0, (fresh?.size ?? shares) - fill.shares), 'atMost')
     }
     else toast(fill.error || 'Sell not filled', 'error')
   } catch (e) {

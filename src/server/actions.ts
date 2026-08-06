@@ -15,6 +15,7 @@ import * as windows from '../engine/windows.js'
 import * as orderBook from '../engine/order-book.js'
 import { reportFps } from '../engine/performance.js'
 import { notify } from '../engine/notify.js'
+import { recordTrade } from '../io/trade-audit.js'
 
 // ── windows.ts — event handlers ───────────────────────────────────────────────
 
@@ -470,6 +471,51 @@ export const actions: Record<string, (args: unknown[]) => Promise<void>> = {
   },
 
   // ── performance ────────────────────────────────────────────────────────────
+  /**
+   * Record a BROWSER-SIGNED fill in the durable audit log.
+   *
+   * In browser ("Wallet") mode the order is built, signed and posted entirely
+   * client-side, so the server never sees it — which meant those trades produced
+   * NO audit entry and NO reconciliation, while server-mode trades produced
+   * both. For real money that asymmetry is the wrong way round: browser mode is
+   * the zero-custody path a user is most likely to trust.
+   *
+   * The client reports what it observed, including the result of its own
+   * post-fill position check. This is a local diary, not a source of truth —
+   * on-chain and the CLOB remain authoritative — so values are clamped/coerced
+   * and never used to move money.
+   */
+  record_browser_fill: async ([payload]: unknown[]) => {
+    const p = (payload ?? {}) as Record<string, unknown>
+    const action = String(p['action'] ?? '')
+    if (action !== 'buy' && action !== 'sell') return
+    const num = (v: unknown): number | undefined => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n : undefined
+    }
+    const str = (v: unknown, max = 80): string | undefined => {
+      const s = v == null ? '' : String(v)
+      return s ? s.slice(0, max) : undefined
+    }
+    recordTrade({
+      action,
+      // Browser mode is live by definition — practice never routes here.
+      mode: 'live',
+      asset: str(p['asset'], 12) ?? '?',
+      direction: str(p['direction'], 8),
+      token: str(p['token'], 80),
+      shares: num(p['shares']),
+      price_cents: num(p['price_cents']),
+      usd: num(p['usd']),
+      ref: str(p['ref'], 120),
+      partial: p['partial'] === true,
+      signer: 'browser',
+      ...(p['unreconciled'] === true
+        ? { unreconciled: true, observed_shares: num(p['observed_shares']) ?? 0 }
+        : {}),
+    })
+  },
+
   report_fps: async ([fps]: unknown[]) => {
     reportFps(Number(fps ?? 60))
     patch('reported_fps', Number(fps ?? 60))

@@ -53,6 +53,10 @@ export interface TradeAuditEntry {
   unreconciled?: boolean
   /** Holding actually observed when a reconcile failed. */
   observed_shares?: number
+  /** Which key signed it: 'server' (local/.env key) or 'browser' (the user's
+   *  extension). Browser-signed fills are reported BY the client, so they are a
+   *  diary of what it observed rather than something the server witnessed. */
+  signer?: 'server' | 'browser'
 }
 
 /**
