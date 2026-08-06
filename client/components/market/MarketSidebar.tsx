@@ -52,8 +52,6 @@ function MarketCard({ w, isActive }: { w: Record<string, unknown>; isActive: boo
   const slug = String(w['slug'] ?? '')
   const upToken = String(w['up_token'] ?? '')
   const dnToken = String(w['dn_token'] ?? '')
-  const upAsk = Number(w['up_ask'] ?? 0)
-  const dnAsk = Number(w['dn_ask'] ?? 0)
   const endTs = Number(w['end_ts'] ?? 0)
   const result = String(w['result'] ?? '')
   const intervalS = interval === '15m' ? 900 : 300
@@ -128,7 +126,7 @@ function MarketCard({ w, isActive }: { w: Record<string, unknown>; isActive: boo
 
       {/* ── UP (top) / DOWN (bottom) odds, stacked ── */}
       <div style={{ ...cellBox, padding: SP.XS, background: 'transparent', border: 'none' }}>
-        <AskTile vertical upToken={upToken} dnToken={dnToken} upSeed={upAsk} dnSeed={dnAsk} />
+        <AskTile vertical upToken={upToken} dnToken={dnToken} />
       </div>
 
       {/* ── last-3 (top) · timer (confined, centered) ── */}

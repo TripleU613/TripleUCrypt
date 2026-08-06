@@ -1,4 +1,5 @@
 import { bus } from '../bus.js'
+import type { ActivityEntry } from './activity.js'
 
 export interface AppState {
   // ── Performance ──────────────────────────────────────────────────────────
@@ -129,6 +130,8 @@ export interface AppState {
   recent_results: Record<string, unknown>[]
   history_expanded: boolean
   window_results: Record<string, string[]>
+  /** Cross-market activity log, newest first, capped (see engine/activity.ts). */
+  activity: ActivityEntry[]
 
   // ── Wallet Panel ──────────────────────────────────────────────────────────
   show_wallet: boolean

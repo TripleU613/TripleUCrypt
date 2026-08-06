@@ -6,6 +6,7 @@ export * as chart from './chart.js'
 export * as trading from './trading.js'
 export * as positions from './positions.js'
 export * as social from './social.js'
+export * as activity from './activity.js'
 export * as wallet from './wallet.js'
 export * as marketData from './market-data.js'
 export * as orderBook from './order-book.js'
@@ -17,6 +18,7 @@ import { initState as chartInit, loadSettings as chartLoadSettings } from './cha
 import { initState as tradingInit } from './trading.js'
 import { initState as positionsInit } from './positions.js'
 import { initState as socialInit } from './social.js'
+import { initState as activityInit, startActivityFeed } from './activity.js'
 import { initState as walletInit } from './wallet.js'
 import { initState as marketDataInit } from './market-data.js'
 import { initState as orderBookInit } from './order-book.js'
@@ -36,10 +38,13 @@ export function initAllState(): void {
   tradingInit(state)
   positionsInit(state)
   socialInit(state)
+  activityInit(state)
   walletInit(state)
   marketDataInit(state)
   orderBookInit(state)
   _wireBrokerQuotes()
+  // Subscribe the activity log to the bus feeds it draws on (Chainlink ticks).
+  startActivityFeed()
   // Restore persisted settings (mode, config, prefs) over the defaults set above.
   // Body is synchronous (sync fs read), so state is ready before clients connect.
   void chartLoadSettings()

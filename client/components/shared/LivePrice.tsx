@@ -1,14 +1,17 @@
 /**
- * RTDS-fed live price + delta component.
+ * Live price + delta component, fed from the store's Chainlink price.
  * Ported from TripleUCrypt/ui/shared/live_price.py
  *
  * kind="value" → the current price ("$67,432.10"), colored green/red vs open.
  * kind="delta" → the signed delta from open ("+$124.50" / "-$3.20").
+ *
+ * The price used to come from a browser socket to Polymarket's RTDS. The server
+ * runs that socket now and patches state.cl_price — which it only does for the
+ * chart asset, hence the asset check below.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import NumberFlow from '@number-flow/react'
-import { sub } from '../../buses/RtdsBus'
 import { useStore } from '../../store'
 import { C } from '../../constants/index.js'
 
@@ -16,7 +19,7 @@ interface LivePriceProps {
   kind: 'value' | 'delta'
   asset: string
   openPrice: number
-  /** Server price shown until first socket frame */
+  /** Price shown until the stream produces a tick for this asset */
   seed?: number
   upColor?: string
   downColor?: string
@@ -32,8 +35,6 @@ export function LivePrice({
   downColor = C.RED,
   dimColor = 'var(--tc-dim2)',
 }: LivePriceProps): JSX.Element {
-  const [px, setPx] = useState(seed > 0 ? seed : 0)
-  const pxRef   = useRef(seed > 0 ? seed : 0)
   const openRef = useRef(openPrice)
   useEffect(() => { openRef.current = openPrice }, [openPrice])
 
@@ -41,37 +42,12 @@ export function LivePrice({
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
 
-  // Re-seed from server value only while socket hasn't produced a live tick yet
-  useEffect(() => {
-    if (!(pxRef.current > 0) && seed > 0) { pxRef.current = seed; setPx(seed) }
-  }, [seed])
-
-  // Subscribe to the shared RTDS bus; filter to this asset's chainlink price
-  useEffect(() => {
-    const want = ((asset || 'BTC').toLowerCase()) + '/usd'
-    const unsub = sub((arr) => {
-      for (const msg of arr as {topic?: string; payload?: {symbol?: string; value?: string|number}}[]) {
-        if (msg && msg.topic === 'crypto_prices_chainlink' && msg.payload &&
-            (msg.payload.symbol || '').toLowerCase() === want) {
-          const v = parseFloat(String(msg.payload.value))
-          if (!isNaN(v) && Math.abs(v - pxRef.current) > 1e-9) {
-            pxRef.current = v
-            setPx(v)
-          }
-        }
-      }
-    })
-    return () => unsub()
-  }, [asset])
-
-  // Fallback to store's cl_price if RTDS stalls >1.5s
-  const clPrice = useStore((s) => s.cl_price)
-  useEffect(() => {
-    if (clPrice > 0 && !(pxRef.current > 0)) {
-      pxRef.current = clPrice
-      setPx(clPrice)
-    }
-  }, [clPrice])
+  // cl_price only tracks the chart asset, so ignore it for any other asset and
+  // let `seed` carry that case. One number out of the selector, so this
+  // re-renders on a price move and nothing else.
+  const live = useStore((s) =>
+    (s.chart_asset || '').toUpperCase() === (asset || 'BTC').toUpperCase() ? s.cl_price : 0)
+  const px = live > 0 ? live : (seed > 0 ? seed : 0)
 
   const open = openRef.current
   const col = open <= 0 ? dimColor : px >= open ? upColor : downColor

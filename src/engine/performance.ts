@@ -88,9 +88,14 @@ export interface TierSettings {
   flip_ms: number
 }
 
+// fast_ms on the two top tiers is tighter than it looks like it needs to be
+// because the browser no longer opens its own market sockets: this loop is now
+// the ONLY path a price tick has to the screen, not a second opinion behind a
+// direct feed. ECO/SURVIVAL keep their slower cadence on purpose — those tiers
+// exist for machines that genuinely cannot keep up.
 export const TIER_SETTINGS: Map<PowerTier, TierSettings> = new Map([
-  [PowerTier.TURBO,    { fast_ms: 200,  tick_ms: 500,  poll_ms: 3000,  ob_ms: 4000,  anim_ms: 300, flip_ms: 350 }],
-  [PowerTier.SMOOTH,   { fast_ms: 300,  tick_ms: 700,  poll_ms: 4000,  ob_ms: 5000,  anim_ms: 200, flip_ms: 450 }],
+  [PowerTier.TURBO,    { fast_ms: 120,  tick_ms: 500,  poll_ms: 3000,  ob_ms: 4000,  anim_ms: 300, flip_ms: 350 }],
+  [PowerTier.SMOOTH,   { fast_ms: 150,  tick_ms: 700,  poll_ms: 4000,  ob_ms: 5000,  anim_ms: 200, flip_ms: 450 }],
   [PowerTier.ECO,      { fast_ms: 500,  tick_ms: 1000, poll_ms: 6000,  ob_ms: 8000,  anim_ms: 150, flip_ms: 600 }],
   [PowerTier.SURVIVAL, { fast_ms: 1000, tick_ms: 2000, poll_ms: 12000, ob_ms: 15000, anim_ms: 0,   flip_ms: 800 }],
 ])

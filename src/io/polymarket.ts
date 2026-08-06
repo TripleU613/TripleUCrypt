@@ -584,6 +584,22 @@ export function rtdsTradesSubscribe(): string {
 }
 
 /**
+ * RTDS subscribe frame for the full social firehose: trades from every market
+ * plus comments. Feeds both the per-market trade feed and the cross-market
+ * activity log (engine/activity.ts) off one socket. Chainlink price ticks are
+ * NOT included here — chart.ts already has its own subscription for those.
+ */
+export function rtdsActivitySubscribe(): string {
+  return JSON.stringify({
+    action: "subscribe",
+    subscriptions: [
+      { topic: "activity", type: "trades" },
+      { topic: "comments", type: "*" },
+    ],
+  });
+}
+
+/**
  * Parse one RTDS activity frame → a TradeRow with extras.
  * Returns null if not a valid trade.
  */

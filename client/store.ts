@@ -1,5 +1,17 @@
 import { create } from 'zustand'
 
+/** One row of the cross-market activity log. Mirrors ActivityEntry in
+ *  src/engine/activity.ts — the server ships it pre-formatted (`t` is already
+ *  "HH:MM:SS" UTC, `text` is already the rendered sentence). */
+export interface ActivityEntry {
+  id: number
+  t: string
+  kind: 'price' | 'trade' | 'chat'
+  text: string
+  /** Only present on kind === 'trade': true = Up, false = Down. */
+  up?: boolean
+}
+
 // AppState mirrors src/engine/state.ts AppState interface
 export interface AppState {
   // Performance
@@ -127,6 +139,8 @@ export interface AppState {
   recent_results: Record<string, unknown>[]
   history_expanded: boolean
   window_results: Record<string, string[]>
+  /** Cross-market activity log, newest first, capped server-side. */
+  activity: ActivityEntry[]
 
   // Wallet Panel
   show_wallet: boolean
@@ -354,6 +368,7 @@ export const useStore = create<Store>((set) => ({
   recent_results: [],
   history_expanded: false,
   window_results: {},
+  activity: [],
 
   // Wallet Panel
   show_wallet: false,

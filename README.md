@@ -101,8 +101,9 @@ See [DOCKER.md](DOCKER.md) for details.
 | `src/io/` | Data layer — `kraken.ts`, `polymarket.ts` (Gamma/CLOB), `chainlink.ts`, `hindsight.ts` |
 | `src/banking/` | Money engine behind one `Broker` interface — `live.ts` (`@polymarket/clob-client-v2`), `paper.ts` + `ledger.ts` (practice), `local-wallet.ts` (generated wallet), `resilience.ts` |
 | `client/components/` | UI — nav, chart (canvas engine in `chart/EChart.tsx`), market sidebar, trade panel, order book, wallet panel |
-| `client/buses/` | Browser-side realtime + wallet bridges — `RtdsBus.ts` (Chainlink), `ClobBus.ts`/`ClobTrade.ts` (CLOB), `MetaMaskBus.ts` |
+| `client/buses/` | Browser-side wallet bridges — `ClobTrade.ts` (order signing, via the same-origin `/clob`, `/data-api`, `/rpc` proxies), `MetaMaskBus.ts` (injected extension) |
 | `client/store.ts` | Zustand client state |
+| `client/sse-client.ts` | The browser's only live feed: `/sse` + the liveness watchdog. All market data (prices, book, activity) arrives here — the browser opens no third-party sockets |
 
 See [ROADMAP.md](ROADMAP.md) for the feature checklist.
 

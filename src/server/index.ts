@@ -104,6 +104,53 @@ app.post('/rpc', async (req, res) => {
   }
 })
 
+// ── Avatar image proxy ────────────────────────────────────────────────────────
+// Profile images come back from Polymarket as absolute CDN URLs and were rendered
+// straight into <img src>, so every avatar paint was a direct browser GET to
+// Polymarket — leaking IP, User-Agent and Referer. A URL grep can't catch this
+// because the URL is server-supplied DATA, not a literal in the code.
+//
+// This is deliberately NOT a general image proxy. An open one is an SSRF hole:
+// someone could point it at 169.254.169.254 (cloud metadata) or an internal
+// address and read the response through your own server. Hence: exact host
+// allowlist, https only, image content-types only, a size cap and a timeout.
+const IMG_HOSTS = new Set([
+  'polymarket-upload.s3.us-east-2.amazonaws.com',
+])
+const IMG_MAX_BYTES = 2 * 1024 * 1024
+
+app.get('/img', async (req, res) => {
+  try {
+    const raw = String(req.query['u'] ?? '')
+    let u: URL
+    try { u = new URL(raw) } catch { res.status(400).end(); return }
+    if (u.protocol !== 'https:' || !IMG_HOSTS.has(u.hostname)) {
+      res.status(403).end(); return
+    }
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 8_000)
+    let r: Response
+    try {
+      r = await fetch(u.toString(), { signal: ctl.signal, redirect: 'error' })
+    } finally {
+      clearTimeout(timer)
+    }
+    const ct = r.headers.get('content-type') ?? ''
+    if (!r.ok || !ct.startsWith('image/')) { res.status(404).end(); return }
+    const len = Number(r.headers.get('content-length') ?? 0)
+    if (len > IMG_MAX_BYTES) { res.status(413).end(); return }
+    const buf = Buffer.from(await r.arrayBuffer())
+    if (buf.length > IMG_MAX_BYTES) { res.status(413).end(); return }
+    // Avatars are effectively immutable per URL; cache hard so the panel doesn't
+    // re-fetch them on every tab switch.
+    res.set('content-type', ct)
+    res.set('cache-control', 'public, max-age=86400')
+    res.send(buf)
+  } catch {
+    res.status(502).end()
+  }
+})
+
 // ── Static files (Vite build output) ─────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

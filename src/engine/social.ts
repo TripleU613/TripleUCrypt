@@ -4,6 +4,7 @@ import { pollSleep } from './performance.js'
 import { bus } from '../bus.js'
 import { notify } from './notify.js'
 import { guardSocket } from '../io/ws-guard.js'
+import { ingestRtdsFrame } from './activity.js'
 
 // ── IO imports ────────────────────────────────────────────────────────────────
 
@@ -122,30 +123,52 @@ export async function runStreamSocial(signal: AbortSignal): Promise<void> {
         guardSocket(ws, { label: 'rtds', staleMs: 60000 })
 
         ws.on('open', () => {
-          const subFn = _pm?.['rtdsTradesSubscribe']
+          // Prefer the trades+comments frame; fall back to trades-only so an
+          // older io module still streams the per-market feed.
+          const subFn = _pm?.['rtdsActivitySubscribe'] ?? _pm?.['rtdsTradesSubscribe']
           if (typeof subFn === 'function') ws.send(subFn())
         })
 
         ws.on('message', (data: Buffer) => {
           if (signal.aborted) { ws.close(); resolve(); return }
+
+          // RTDS sends either a single frame or a batch, plus non-JSON keepalives.
+          let frames: unknown[]
           try {
-            const parseFn = _pm?.['parseRtdsTrade']
-            if (typeof parseFn !== 'function') return
-
-            const trade = parseFn(data.toString()) as (Record<string, unknown> & {condition_id: string}) | null
-            if (!trade) return
-
-            // Engine_016: route by effective_condition_id for proper time-travel routing
-            const cid = state.effective_condition_id || state.viewed_condition_id || ''
-            if (trade['condition_id'] !== cid) return
-
-            bus.emit('rtds_trade', trade)
-
-            const current = state.mkt_trades ?? []
-            const updated = [trade, ...current].slice(0, state.feed_limit ?? 20)
-            patch('mkt_trades', updated)
+            const parsed = JSON.parse(data.toString())
+            frames = Array.isArray(parsed) ? parsed : [parsed]
           } catch {
-            // parse error
+            return  // keepalive / malformed
+          }
+
+          for (const frame of frames) {
+            // The cross-market activity log sees EVERY frame — it must run before
+            // the condition_id filter below, which exists to keep mkt_trades
+            // scoped to the viewed market.
+            try { ingestRtdsFrame(frame) } catch { /* malformed frame */ }
+
+            try {
+              const parseFn = _pm?.['parseRtdsTrade']
+              if (typeof parseFn !== 'function') continue
+
+              // parseRtdsTrade takes the PARSED frame. It used to be handed the
+              // raw JSON string here, which its `typeof !== "object"` guard
+              // rejected outright — so this feed silently produced nothing.
+              const trade = parseFn(frame) as (Record<string, unknown> & {condition_id: string}) | null
+              if (!trade) continue
+
+              // Engine_016: route by effective_condition_id for proper time-travel routing
+              const cid = state.effective_condition_id || state.viewed_condition_id || ''
+              if (trade['condition_id'] !== cid) continue
+
+              bus.emit('rtds_trade', trade)
+
+              const current = state.mkt_trades ?? []
+              const updated = [trade, ...current].slice(0, state.feed_limit ?? 20)
+              patch('mkt_trades', updated)
+            } catch {
+              // parse error
+            }
           }
         })
 

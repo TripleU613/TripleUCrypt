@@ -11,8 +11,14 @@ describe('TIER_SETTINGS', () => {
     expect(TIER_SETTINGS.has(PowerTier.SURVIVAL)).toBe(true)
   })
 
-  it('TURBO has fast_ms=200', () => {
-    expect(TIER_SETTINGS.get(PowerTier.TURBO)!.fast_ms).toBe(200)
+  // Tightened when the browser's direct market sockets were removed: fast_ms is
+  // now the only path a price tick has to the screen.
+  it('TURBO has fast_ms=120', () => {
+    expect(TIER_SETTINGS.get(PowerTier.TURBO)!.fast_ms).toBe(120)
+  })
+
+  it('SMOOTH has fast_ms=150', () => {
+    expect(TIER_SETTINGS.get(PowerTier.SMOOTH)!.fast_ms).toBe(150)
   })
 
   it('SURVIVAL has fast_ms=1000', () => {

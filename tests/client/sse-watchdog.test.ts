@@ -9,7 +9,9 @@
  * in EventSource and is therefore invisible to the client.
  *
  * These tests drive connectSSE() against a fake EventSource and fake timers to
- * assert the watchdog actually tears down and replaces a silent stream.
+ * assert the watchdog actually tears down and replaces a silent stream. It
+ * matters more than ever now that this stream is the browser's only live feed --
+ * there are no market WebSockets left to keep any part of the screen moving.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -56,9 +58,6 @@ class FakeEventSource {
 }
 
 // ── Fakes for the module's collaborators ────────────────────────────────────
-const kickSpy = vi.fn()
-vi.mock('../../client/buses/kick.js', () => ({ kickBuses: () => kickSpy() }))
-
 const patchSpy = vi.fn()
 vi.mock('../../client/store.js', () => ({
   useStore: {
@@ -75,7 +74,6 @@ let cleanup: (() => void) | null = null
 beforeEach(() => {
   vi.useFakeTimers()
   FakeEventSource.reset()
-  kickSpy.mockClear()
   patchSpy.mockClear()
   vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource)
   // Minimal DOM surface the module touches.
@@ -139,13 +137,6 @@ describe('SSE watchdog', () => {
     }
     expect(es.closed).toBe(false)
     expect(FakeEventSource.instances).toHaveLength(1)
-  })
-
-  it('kicks the market sockets when it finds a dead stream', async () => {
-    await start()
-    expect(kickSpy).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(kickSpy).toHaveBeenCalled()   // same network event likely killed them
   })
 
   it('marks the store disconnected when it reconnects a zombie', async () => {

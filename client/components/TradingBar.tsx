@@ -2,7 +2,6 @@ import { useRef, useEffect, useState, type ReactNode } from 'react'
 import NumberFlow from '@number-flow/react'
 import { useStore } from '../store.js'
 import { call } from '../api.js'
-import { sub } from '../buses/ClobBus.js'
 import { OrderBook } from './trading/OrderBook.js'
 import { LivePrice } from './shared/LivePrice.js'
 import { RollDigits } from './shared/RollDigits.js'
@@ -12,30 +11,23 @@ import { playFx } from '../lib/fx.js'
 import { useCountdown } from '../lib/useCountdown.js'
 import { C, FONT, D, STR, SP, SZ, FS, FW } from '../constants/index.js'
 
-// ── Live ask chip — streams off the shared CLOB bus, NumberFlow flip ──────────
+// ── Live ask value hook — one number, straight off the SSE-fed store ──────────
+// The server streams the whole CLOB book into token_asks, so the ask for a token
+// is already in the store. Select the SINGLE number, never the token_asks map:
+// selecting the map would re-render on any of the ~28 streamed tokens moving.
+// The server also gates its patches on a >0.05¢ move, so no local threshold.
+function useLiveAsk(side: string, upToken: string, dnToken: string): number {
+  const token = side === 'DOWN' ? dnToken : upToken
+  return useStore(s => (token ? s.token_asks[token] ?? 0 : 0))
+}
 
-function LiveAsk({ side, upToken, dnToken, upSeed, dnSeed, color, glowCls = '' }:
-  { side: string; upToken: string; dnToken: string; upSeed: number; dnSeed: number; color: string; glowCls?: string }) {
-  const upRef = useRef(upSeed > 0 ? upSeed : 0)
-  const dnRef = useRef(dnSeed > 0 ? dnSeed : 0)
-  const [, force] = useState(0)
+// ── Live ask chip — NumberFlow flip ───────────────────────────────────────────
+
+function LiveAsk({ side, upToken, dnToken, color, glowCls = '' }:
+  { side: string; upToken: string; dnToken: string; color: string; glowCls?: string }) {
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
-  useEffect(() => { if (!(upRef.current > 0) && upSeed > 0) { upRef.current = upSeed; force(n => n + 1) } }, [upSeed])
-  useEffect(() => { if (!(dnRef.current > 0) && dnSeed > 0) { dnRef.current = dnSeed; force(n => n + 1) } }, [dnSeed])
-  useEffect(() => {
-    if (!upToken && !dnToken) return
-    upRef.current = upSeed > 0 ? upSeed : 0
-    dnRef.current = dnSeed > 0 ? dnSeed : 0
-    force(n => n + 1)
-    const unsub = sub([upToken, dnToken], (token, ask) => {
-      if (ask == null || isNaN(ask)) return
-      if (token === upToken) { if (Math.abs(ask - upRef.current) > 0.05) { upRef.current = ask; force(n => n + 1) } }
-      else if (token === dnToken) { if (Math.abs(ask - dnRef.current) > 0.05) { dnRef.current = ask; force(n => n + 1) } }
-    })
-    return unsub
-  }, [upToken, dnToken])
-  const ask = side === 'DOWN' ? dnRef.current : upRef.current
+  const ask = useLiveAsk(side, upToken, dnToken)
   if (!(ask > 0)) return <span style={{ color, fontVariantNumeric: 'tabular-nums' }}>—</span>
   return mounted
     ? <NumberFlow value={ask} suffix="¢" trend={0}
@@ -48,52 +40,12 @@ function LiveAsk({ side, upToken, dnToken, upSeed, dnSeed, color, glowCls = '' }
     : <span className={glowCls} style={{ color, fontVariantNumeric: 'tabular-nums' }}>{ask.toFixed(1)}¢</span>
 }
 
-function LivePayout({ side, size, upToken, dnToken, upSeed, dnSeed, color }:
-  { side: string; size: number; upToken: string; dnToken: string; upSeed: number; dnSeed: number; color: string }) {
-  const upRef = useRef(upSeed > 0 ? upSeed : 0)
-  const dnRef = useRef(dnSeed > 0 ? dnSeed : 0)
-  const [, force] = useState(0)
-  useEffect(() => { if (!(upRef.current > 0) && upSeed > 0) { upRef.current = upSeed; force(n => n + 1) } }, [upSeed])
-  useEffect(() => { if (!(dnRef.current > 0) && dnSeed > 0) { dnRef.current = dnSeed; force(n => n + 1) } }, [dnSeed])
-  useEffect(() => {
-    if (!upToken && !dnToken) return
-    upRef.current = upSeed > 0 ? upSeed : 0; dnRef.current = dnSeed > 0 ? dnSeed : 0
-    const unsub = sub([upToken, dnToken], (token, ask) => {
-      if (ask == null || isNaN(ask)) return
-      if (token === upToken) { if (Math.abs(ask - upRef.current) > 0.05) { upRef.current = ask; force(n => n + 1) } }
-      else if (token === dnToken) { if (Math.abs(ask - dnRef.current) > 0.05) { dnRef.current = ask; force(n => n + 1) } }
-    })
-    return unsub
-  }, [upToken, dnToken])
-  const ask = side === 'DOWN' ? dnRef.current : upRef.current
+function LivePayout({ side, size, upToken, dnToken, color }:
+  { side: string; size: number; upToken: string; dnToken: string; color: string }) {
+  const ask = useLiveAsk(side, upToken, dnToken)
   if (!(ask > 0) || !(size > 0)) return <span style={{ color }}>—</span>
   const pays = (size * 100 / ask).toFixed(2)
   return <span style={{ color, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>${pays}</span>
-}
-
-// ── Live ask value hook — streams off the CLOB bus (same as LiveAsk/LivePayout) ─
-// Returns the current live ask in cents for the chosen side, seeded from the
-// store and updated on every CLOB tick so payouts recompute in real time.
-function useLiveAsk(side: string, upToken: string, dnToken: string, upSeed: number, dnSeed: number): number {
-  const upRef = useRef(upSeed > 0 ? upSeed : 0)
-  const dnRef = useRef(dnSeed > 0 ? dnSeed : 0)
-  const [, force] = useState(0)
-  useEffect(() => { if (!(upRef.current > 0) && upSeed > 0) { upRef.current = upSeed; force(n => n + 1) } }, [upSeed])
-  useEffect(() => { if (!(dnRef.current > 0) && dnSeed > 0) { dnRef.current = dnSeed; force(n => n + 1) } }, [dnSeed])
-  useEffect(() => {
-    if (!upToken && !dnToken) return
-    upRef.current = upSeed > 0 ? upSeed : 0
-    dnRef.current = dnSeed > 0 ? dnSeed : 0
-    force(n => n + 1)
-    const unsub = sub([upToken, dnToken], (token, ask) => {
-      if (ask == null || isNaN(ask)) return
-      if (token === upToken) { if (Math.abs(ask - upRef.current) > 0.05) { upRef.current = ask; force(n => n + 1) } }
-      else if (token === dnToken) { if (Math.abs(ask - dnRef.current) > 0.05) { dnRef.current = ask; force(n => n + 1) } }
-    })
-    return unsub
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [upToken, dnToken])
-  return side === 'DOWN' ? dnRef.current : upRef.current
 }
 
 // ── Countdown timer (client-side) ─────────────────────────────────────────────
@@ -174,8 +126,6 @@ function SideBtn({ direction, tall = false }: { direction: 'UP' | 'DOWN'; tall?:
   const buySide = useStore(s => s.buy_side) as string
   const upToken = useStore(s => s.up_token) as string
   const dnToken = useStore(s => s.dn_token) as string
-  const upAsk = useStore(s => s.up_ask) as number
-  const dnAsk = useStore(s => s.dn_ask) as number
   const isUp = direction === 'UP'
   const selected = buySide === direction
   const color = isUp ? C.GREEN : C.RED
@@ -205,7 +155,6 @@ function SideBtn({ direction, tall = false }: { direction: 'UP' | 'DOWN'; tall?:
         </div>
         <div style={{ fontSize: FS.H1, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, lineHeight: 1, letterSpacing: '-0.01em' }}>
           <LiveAsk side={direction} upToken={upToken} dnToken={dnToken}
-            upSeed={upAsk} dnSeed={dnAsk}
             color={color}
             glowCls={selected ? 'tc-tick' : `tc-tglow-${direction.toLowerCase()} tc-tick`} />
         </div>
@@ -224,8 +173,6 @@ function PresetChip({ value, onEdit, mobile = false, selected = false, onSelect 
   const buySide = useStore(s => s.buy_side) as string
   const upToken = useStore(s => s.up_token) as string
   const dnToken = useStore(s => s.dn_token) as string
-  const upAsk = useStore(s => s.up_ask) as number
-  const dnAsk = useStore(s => s.dn_ask) as number
   const sideColor = buySide === 'UP' ? C.GREEN : C.RED
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(String(value))
@@ -292,7 +239,7 @@ function PresetChip({ value, onEdit, mobile = false, selected = false, onSelect 
         </span>
         <div style={{ fontSize: FS.XXS, fontWeight: FW.SEMI, fontFamily: FONT.MONO, lineHeight: 1, whiteSpace: 'nowrap' }}>
           <LivePayout side={buySide} size={value} upToken={upToken} dnToken={dnToken}
-            upSeed={upAsk} dnSeed={dnAsk} color="var(--tc-dim2)" />
+            color="var(--tc-dim2)" />
         </div>
       </div>
     </div>
@@ -417,8 +364,6 @@ function Mode1Tap({ mobile = false }: { mobile?: boolean } = {}) {
   const buySide = useStore(s => s.buy_side) as string
   const upToken = useStore(s => s.up_token) as string
   const dnToken = useStore(s => s.dn_token) as string
-  const upAsk = useStore(s => s.up_ask) as number
-  const dnAsk = useStore(s => s.dn_ask) as number
   // Mobile: tap selects a preset (no instant buy); a Buy button confirms it.
   // Default to the first preset so the Buy button is ready the moment 1-Tap opens.
   const [selIdx, setSelIdx] = useState<number>(0)
@@ -465,7 +410,7 @@ function Mode1Tap({ mobile = false }: { mobile?: boolean } = {}) {
               Buy ${selVal % 1 === 0 ? selVal : selVal.toFixed(2)} {buySide === 'UP' ? '▲' : '▼'}
             </span>
             <span style={{ fontSize: FS.XS, fontWeight: FW.BOLD, opacity: 0.92 }}>
-              <LivePayout side={buySide} size={selVal} upToken={upToken} dnToken={dnToken} upSeed={upAsk} dnSeed={dnAsk} color={sideColor} />
+              <LivePayout side={buySide} size={selVal} upToken={upToken} dnToken={dnToken} color={sideColor} />
             </span>
           </button>
         )}
@@ -485,10 +430,8 @@ function ModeMarket() {
   const tradeSize = useStore(s => s.trade_size) as string
   const upToken = useStore(s => s.up_token) as string
   const dnToken = useStore(s => s.dn_token) as string
-  const upAsk = useStore(s => s.up_ask) as number
-  const dnAsk = useStore(s => s.dn_ask) as number
-  // Live ask streams off the CLOB bus so the payout/CTA update in real time
-  const ask = useLiveAsk(buySide, upToken, dnToken, upAsk, dnAsk)
+  // Live ask off the SSE-fed store so the payout/CTA update in real time
+  const ask = useLiveAsk(buySide, upToken, dnToken)
   // Gross payout - cost = profit (same formula as Python win_profit_float)
   const size = parseFloat(tradeSize) || 0
   const payout = ask > 0 ? (size * 100 / ask) : 0

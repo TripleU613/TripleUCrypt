@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { animate } from 'animejs'
 import { useStore } from '../store.js'
 import { call } from '../api.js'
@@ -90,9 +90,34 @@ function CommentSkelRow() {
 
 // ── Avatar ────────────────────────────────────────────────────────────────────
 
+/**
+ * Route an absolute avatar URL through our own /img proxy.
+ *
+ * These URLs are Polymarket CDN links that arrive as DATA in the API response, so
+ * rendering them directly made the browser hit Polymarket for every avatar —
+ * leaking IP / User-Agent / Referer even though every fetch and socket in the app
+ * is same-origin. The server only proxies an allowlisted host, so anything
+ * unexpected returns 403 and the coloured-circle fallback below takes over.
+ */
+function proxied(img: string): string {
+  if (!img) return ''
+  if (!/^https?:/i.test(img)) return img   // already relative/data: — leave it
+  return `/img?u=${encodeURIComponent(img)}`
+}
+
 function Avatar({ img, color, size = SP.H3 }: { img: string; color: string; size?: string }) {
-  if (img) {
-    return <img src={img} width={size} height={size} style={{ borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--tc-glass-brd)', flexShrink: 0 }} alt="" />
+  const [failed, setFailed] = React.useState(false)
+  const src = failed ? '' : proxied(img)
+  if (src) {
+    return (
+      <img
+        src={src} width={size} height={size} alt=""
+        // A blocked/missing avatar must degrade to the colour circle, never to a
+        // broken-image glyph.
+        onError={() => setFailed(true)}
+        style={{ borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--tc-glass-brd)', flexShrink: 0 }}
+      />
+    )
   }
   return <div style={{ width: size, height: size, borderRadius: '50%', background: color, border: '1px solid var(--tc-glass-brd)', flexShrink: 0 }} />
 }

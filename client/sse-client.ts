@@ -1,5 +1,4 @@
 import { useStore } from './store.js'
-import { kickBuses } from './buses/kick.js'
 
 /**
  * Open an SSE connection to /sse and feed the Zustand store.
@@ -14,10 +13,9 @@ import { kickBuses } from './buses/kick.js'
  *   * `readyState` stays OPEN,
  *   * the browser never retries.
  * The tab then renders whatever it last received, forever, while reporting
- * itself connected. And because the market WebSocket buses have their own
- * watchdogs and DO recover, prices keep ticking while everything the server
- * feeds (windows, positions, order book, scoreboard) sits frozen -- which reads
- * as a half-broken "warped" screen rather than an obvious disconnect.
+ * itself connected. This stream is now the ONLY live feed the browser has --
+ * prices, order book, windows, positions and scoreboard all arrive here -- so a
+ * half-open stream freezes the entire screen while it claims to be connected.
  *
  * So the server emits a named `hb` event every 15s and we require it: if
  * nothing at all arrives for STALE_MS, tear the stream down and reopen. That is
@@ -132,12 +130,10 @@ export function connectSSE(): () => void {
     const age = Date.now() - lastRx
     if (age > STALE_MS) {
       reopen(`no data for ${Math.round(age / 1000)}s`)
-      kickBuses()                // the market sockets are likely stale too
       return
     }
     if (source && source.readyState === 2 /* CLOSED */) {
       reopen('stream closed')
-      kickBuses()
     }
   }
 
@@ -146,12 +142,13 @@ export function connectSSE(): () => void {
 
   // Returning to the tab is the highest-risk moment: timers were throttled or
   // frozen while hidden, so the watchdog may not have run for minutes. Check
-  // right now instead of waiting for the next tick, and kick the market sockets
-  // so their own backoff doesn't hold recovery back another interval.
+  // right now instead of waiting for the next tick.
+  // (There used to be a kickBuses() call here and in checkLiveness above, to
+  // force the browser's RTDS/CLOB sockets to recover alongside the stream. Those
+  // sockets are gone -- the server owns them now -- so there is nothing to kick.)
   const onWake = (): void => {
     if (document.visibilityState !== 'visible') return
     checkLiveness()
-    kickBuses()
   }
   document.addEventListener('visibilitychange', onWake)
   // Waking from sleep or restoring from the back/forward cache does not always

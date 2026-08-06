@@ -2,19 +2,20 @@
  * Native HTML5 canvas chart engine — Line / Probability / Candles.
  *
  * Lifted directly from TripleUCrypt/ui/chart/echarts_view.py _JSX string.
- * Props are wired to useStore() hooks; RTDS + CLOB buses are wired via
- * window.__tcGetRTDS / window.__tcGetCLOB (both defined in the bus modules).
+ * Props are wired to useStore() hooks.
  *
- * The bus singletons are initialised by importing the bus modules — the
- * side-effect of those imports sets up window.__tcGetRTDS and window.__tcGetCLOB
- * so the chart's inline window.* calls work as in the Python build.
+ * The live price and ask series used to arrive on browser sockets (RTDS + CLOB),
+ * whose callbacks wrote straight into priceBuf/askBuf without rendering. The
+ * server owns those sockets now and streams the same values in state, but they
+ * are read NON-REACTIVELY inside the RAF loop (useStore.getState()) rather than
+ * with useStore(): a subscription would add a React commit to this whole
+ * component on every tick, which is exactly the cost the buffers existed to
+ * avoid. See the top of frame().
  */
 
 import { useRef, useEffect } from 'react'
 import { useStore } from '../../store'
 import { C, FONT, MS } from '../../constants/index.js'
-import '../../buses/RtdsBus'  // side-effect: sets up window.__tcGetRTDS
-import '../../buses/ClobBus'  // side-effect: sets up window.__tcGetCLOB
 
 // ── Helpers to derive computed values from the store ─────────────────────────
 
@@ -158,8 +159,6 @@ export function EChart(): JSX.Element {
   const asset         = useStore((s) => s.chart_asset)
   const up_token      = useStore((s) => s.up_token)
   const interval      = useStore((s) => s.interval)
-  const live_price    = useStore((s) => s.cl_price)
-  const up_ask        = useStore((s) => s.up_ask)
   const viewing_future = useStore((s) => s.viewing_future)
   const hist_prob     = useStore((s) => s.hist_prob) as {t: number; pct: number}[]
   const rollover_rev  = useStore((s) => s.rollover_rev)
@@ -208,8 +207,6 @@ export function EChart(): JSX.Element {
   const targetRef   = useRef(target)
   const positionsRef = useRef(positions)
   const candlesRef  = useRef(candles)
-  const livePriceRef = useRef(live_price)
-  const upAskRef     = useRef(up_ask)
   const viewingRef   = useRef(false)
   const viewingFutureRef = useRef(false)
   const viewStartRef = useRef(0)
@@ -245,8 +242,6 @@ export function EChart(): JSX.Element {
   targetRef.current    = target
   positionsRef.current = Array.isArray(positions) ? positions : []
   candlesRef.current   = candles || []
-  livePriceRef.current = live_price
-  upAskRef.current     = up_ask
   viewingRef.current   = !!viewing
   viewingFutureRef.current = !!viewing_future
   viewStartRef.current = view_start || 0
@@ -352,37 +347,10 @@ export function EChart(): JSX.Element {
     flashRef.current = { start: t, end: t + 650 }
   }, [rollover_rev])
 
-  // CLOB bus subscription — re-sub on up_token change
-  useEffect(() => {
-    askBuf.current = []
-    if (!up_token) return
-    const myToken = up_token
-    const unsub = (window as Window & {__tcGetCLOB?: () => {sub: (tokens: string[], cb: (token: string, ask: number, bid: number|null) => void) => () => void}})
-      .__tcGetCLOB!().sub([myToken], (token: string, ask: number, bid: number|null) => {
-        if (token !== myToken || ask == null || isNaN(ask)) return
-        const pct = (bid != null && !isNaN(bid)) ? (ask + bid) / 2 : ask
-        pushAsk(Date.now(), pct)
-      })
-    return () => unsub()
-  }, [up_token])
-
-  // RTDS bus subscription — lifetime, asset via ref
-  useEffect(() => {
-    const unsub = (window as Window & {__tcGetRTDS?: () => {sub: (cb: (arr: unknown[]) => void) => () => void}})
-      .__tcGetRTDS!().sub((arr: unknown[]) => {
-        for (const msg of arr as {topic?: string; payload?: {symbol?: string; value?: string|number}}[]) {
-          if (msg && msg.topic === 'crypto_prices_chainlink' && msg.payload) {
-            const sym = (msg.payload.symbol || '').toLowerCase()
-            const want = (assetRef.current || '').toLowerCase() + '/usd'
-            if (sym === want) {
-              const v = parseFloat(String(msg.payload.value))
-              if (!isNaN(v)) pushPrice(Date.now(), v)
-            }
-          }
-        }
-      })
-    return () => unsub()
-  }, [])
+  // The ask series belongs to one token, so drop it when that token changes.
+  // (This effect used to own the CLOB socket subscription too; the RAF loop
+  // samples the ask off the store instead.)
+  useEffect(() => { askBuf.current = [] }, [up_token])
 
   // ── Canvas + RAF render loop (mounted once) ───────────────────────────────
   useEffect(() => {
@@ -1506,14 +1474,26 @@ export function EChart(): JSX.Element {
       _lastFrameT = now
 
       if (!viewingRef.current) {
-        const wl = livePriceRef.current > 0 ? livePriceRef.current : 0
-        const wa = upAskRef.current > 0 ? upAskRef.current : null
+        // Sample the live series off the store WITHOUT subscribing — see the
+        // module header. getState() is a plain read: no React commit, no
+        // re-render of this component, whatever the tick rate upstream.
+        const st = useStore.getState()
+        const wl = st.cl_price > 0 ? st.cl_price : 0
+        const tok = tokenRef.current
+        // Midpoint when both sides are known, ask alone otherwise — the same
+        // value the CLOB callback used to push. Both are already in cents.
+        const ask = tok ? (st.token_asks[tok] ?? 0) : 0
+        const bid = tok ? (st.token_bids[tok] ?? 0) : 0
+        const wa = ask > 0 ? (bid > 0 ? (ask + bid) / 2 : ask) : null
+        // Push on every change (what the socket callbacks did — pushPrice/pushAsk
+        // coalesce anything closer together than 250ms), and again once the last
+        // point goes stale, so a quiet feed still extends the line to `now`.
         const pb = priceBuf.current
         const lastP = pb[pb.length - 1]
-        if (wl > 0 && (!lastP || now - lastP.t > 1500)) pushPrice(now, wl)
+        if (wl > 0 && (!lastP || wl !== lastP.price || now - lastP.t > 1500)) pushPrice(now, wl)
         const ab = askBuf.current
         const lastA = ab[ab.length - 1]
-        if (wa != null && wa > 0 && (!lastA || now - lastA.t > 1500)) pushAsk(now, wa)
+        if (wa != null && wa > 0 && (!lastA || wa !== lastA.pct || now - lastA.t > 1500)) pushAsk(now, wa)
       }
 
       ctx.clearRect(0, 0, cssW, cssH)

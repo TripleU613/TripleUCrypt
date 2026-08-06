@@ -597,7 +597,13 @@ function WalletModeSection() {
                   style={{ ...pick, opacity: installed ? 1 : 0.62, borderColor: connectedHere ? C.GOLD : 'var(--tc-border)' }}
                   onMouseEnter={e => playFx(e.currentTarget.querySelector('img, svg'), 'jiggle')}
                   onClick={() => connectedHere ? disconnect() : installed ? connectInjected(id) : window.open(installUrl(cat!), '_blank', 'noopener')}>
-                  {det?.icon
+                  {/* EIP-6963 requires this icon to be a data: URI, but that is the
+                      extension's promise, not something we can rely on. A remote
+                      https icon from a non-conforming wallet would be a direct
+                      third-party request from the browser, which this app does not
+                      make anywhere else — so render it only when it really is inline,
+                      and fall back to the generic shield otherwise. */}
+                  {det?.icon && det.icon.startsWith('data:')
                     ? <img src={det.icon} alt="" width={18} height={18} style={{ borderRadius: '4px', flexShrink: 0 }} />
                     : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.DIM3} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>}
                   <span style={pickTxt}>{name}</span>

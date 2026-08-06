@@ -1,13 +1,37 @@
 import { useRef, useEffect, useState } from 'react'
-import { sub } from '../../buses/RtdsBus.js'
+import { useStore, type ActivityEntry } from '../../store.js'
 import { C, FONT, D, SP, FS, FW, STR } from '../../constants/index.js'
 
-interface LogRow { id: number; t: string; tag: string; tagColor: string; text: string; textColor: string }
+/**
+ * Scrolling cross-market activity log.
+ *
+ * This used to consume the Polymarket RTDS firehose directly in the browser and
+ * format every frame itself. The server does that now (src/engine/activity.ts)
+ * and ships the finished rows in state.activity, newest first, capped at 60 and
+ * coalesced to ~3 patches/sec — which is why there is no local flush timer any
+ * more; the batching happens upstream.
+ *
+ * The server's cap is a bandwidth knob, not the scrollback: we accumulate every
+ * id we haven't seen yet so the log keeps a much longer local history than the
+ * 60 rows any single patch carries.
+ */
+
+/** Per-kind presentation. `up` only exists on trades. */
+function look(e: ActivityEntry): { tag: string; tagColor: string; textColor: string } {
+  if (e.kind === 'trade') {
+    const col = e.up ? C.GREEN : C.RED
+    return { tag: STR.TAG_TRADE, tagColor: col, textColor: col }
+  }
+  if (e.kind === 'chat') {
+    return { tag: STR.TAG_CHAT, tagColor: C.BTC, textColor: 'var(--tc-text-2)' }
+  }
+  return { tag: STR.TAG_PRICE, tagColor: 'var(--tc-dim2)', textColor: 'var(--tc-text-2)' }
+}
 
 export function LiveTrades() {
-  const [rows, setRows] = useState<LogRow[]>([])
-  const buf = useRef<LogRow[]>([])
-  const idc = useRef(0)
+  const activity = useStore(s => s.activity)
+  const [rows, setRows] = useState<ActivityEntry[]>([])
+  const lastId = useRef(0)
   const scroller = useRef<HTMLDivElement>(null)
 
   // Smooth auto-scroll to bottom
@@ -27,64 +51,29 @@ export function LiveTrades() {
   }, [])
 
   useEffect(() => {
-    let closed = false
-    const GREEN = C.GREEN, RED = C.RED, GOLD = C.BTC
-
-    const clk = () => {
-      const d = new Date()
-      const p = (n: number) => String(n).padStart(2, '0')
-      return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+    if (!activity.length) return
+    // Ids are server-side monotonic and reset to 0 when the server restarts, so
+    // an id below the high-water mark means a fresh server, not a stale patch:
+    // drop the old scrollback rather than silently ignoring everything after.
+    if (activity[0].id < lastId.current) {
+      lastId.current = 0
+      setRows([])
     }
-    const money = (n: number) => n >= 1000 ? Math.round(n).toLocaleString() : n.toFixed(2)
-    const push = (tag: string, tagColor: string, text: string, textColor: string) => {
-      buf.current.push({ id: idc.current++, t: clk(), tag, tagColor, text, textColor })
+    // Newest first upstream; take the unseen head and flip it oldest-first
+    // because this log grows downwards.
+    const fresh: ActivityEntry[] = []
+    for (const e of activity) {
+      if (e.id <= lastId.current) break
+      fresh.push(e)
     }
-
-    const flush = setInterval(() => {
-      if (closed || !buf.current.length) return
-      const add = buf.current.splice(0, buf.current.length)
-      setRows(prev => {
-        const next = [...prev, ...add]
-        return next.length > 260 ? next.slice(next.length - 200) : next
-      })
-    }, 150)
-
-    const handle = (m: unknown) => {
-      const msg = m as Record<string, unknown>
-      const topic = (msg?.topic as string) ?? ''
-      const p = (msg?.payload ?? msg) as Record<string, unknown>
-      if (!p) return
-
-      if (topic === 'crypto_prices_chainlink' || p['symbol']) {
-        const sym = String(p['symbol'] ?? '').split('/')[0].toUpperCase()
-        const v = parseFloat(String(p['value'] ?? ''))
-        if (sym && !isNaN(v)) push(STR.TAG_PRICE, 'var(--tc-dim2)', `${sym} $${money(v)}`, 'var(--tc-text-2)')
-        return
-      }
-      if (p['side'] || p['outcome']) {
-        const up = String(p['outcome'] ?? '').toLowerCase() === 'up'
-        const amt = (parseFloat(String(p['size'] ?? 0)) * parseFloat(String(p['price'] ?? 0))) || 0
-        const prof = (p['profile'] ?? {}) as Record<string, unknown>
-        const who = String(p['name'] ?? prof['name'] ?? prof['pseudonym'] ?? String(p['proxyWallet'] ?? '').slice(0, 6) + '…')
-        const verb = String(p['side'] ?? '').toUpperCase() === 'SELL' ? 'sold' : 'bought'
-        push(STR.TAG_TRADE, up ? GREEN : RED, `${who} ${verb} ${up ? 'Up' : 'Down'} $${money(amt)}`, up ? GREEN : RED)
-        return
-      }
-      const prof = (p['profile'] ?? p) as Record<string, unknown>
-      if (p['body'] || (prof['name'] && topic === 'comments')) {
-        const who = String(prof['name'] ?? prof['pseudonym'] ?? STR.ANON)
-        push(STR.TAG_CHAT, GOLD, `${who}: ${String(p['body'] ?? '').slice(0, 60)}`, 'var(--tc-text-2)')
-      }
-    }
-
-    const unsub = sub((arr) => {
-      if (closed) return
-      for (const x of arr) { try { handle(x) } catch { /* ignore malformed */ } }
-      if (buf.current.length > 120) buf.current.splice(0, buf.current.length - 120)
+    if (!fresh.length) return
+    lastId.current = fresh[0].id
+    fresh.reverse()
+    setRows(prev => {
+      const next = [...prev, ...fresh]
+      return next.length > 260 ? next.slice(next.length - 200) : next
     })
-
-    return () => { closed = true; clearInterval(flush); unsub() }
-  }, [])
+  }, [activity])
 
   return (
     <div style={{
@@ -98,18 +87,21 @@ export function LiveTrades() {
         WebkitMaskImage: 'linear-gradient(180deg, transparent 0, black 26px)',
         maskImage: 'linear-gradient(180deg, transparent 0, black 26px)',
       }}>
-        {rows.map(r => (
-          <div key={r.id} style={{
-            display: 'flex', alignItems: 'center', gap: SP.XS,
-            padding: `${SP.NONE} ${SP.MD}`, height: SP.XXL, lineHeight: '15px', flexShrink: 0,
-            fontFamily: FONT.MONO,
-            fontSize: FS.XXS, whiteSpace: 'nowrap',
-          }}>
-            <span style={{ color: 'var(--tc-dim3)', flexShrink: 0 }}>{r.t}</span>
-            <span style={{ color: r.tagColor, fontWeight: FW.XBOLD, flexShrink: 0, fontSize: '0.52rem', letterSpacing: '0.04em' }}>{r.tag}</span>
-            <span style={{ color: r.textColor, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{r.text}</span>
-          </div>
-        ))}
+        {rows.map(r => {
+          const { tag, tagColor, textColor } = look(r)
+          return (
+            <div key={r.id} style={{
+              display: 'flex', alignItems: 'center', gap: SP.XS,
+              padding: `${SP.NONE} ${SP.MD}`, height: SP.XXL, lineHeight: '15px', flexShrink: 0,
+              fontFamily: FONT.MONO,
+              fontSize: FS.XXS, whiteSpace: 'nowrap',
+            }}>
+              <span style={{ color: 'var(--tc-dim3)', flexShrink: 0 }}>{r.t}</span>
+              <span style={{ color: tagColor, fontWeight: FW.XBOLD, flexShrink: 0, fontSize: '0.52rem', letterSpacing: '0.04em' }}>{tag}</span>
+              <span style={{ color: textColor, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{r.text}</span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

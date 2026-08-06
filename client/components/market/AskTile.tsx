@@ -1,40 +1,19 @@
-import { useRef, useEffect, useState } from 'react'
-import { sub } from '../../buses/ClobBus.js'
+import { useStore } from '../../store.js'
 import { C, FONT, D, SP, FS, FW } from '../../constants/index.js'
 
 interface AskTileProps {
   upToken: string
   dnToken: string
-  upSeed: number
-  dnSeed: number
   vertical?: boolean   // stack UP over DOWN instead of side-by-side
 }
 
-export function AskTile({ upToken, dnToken, upSeed, dnSeed, vertical = false }: AskTileProps) {
+export function AskTile({ upToken, dnToken, vertical = false }: AskTileProps) {
   const fmt = (v: number) => (v > 0 ? v.toFixed(1) + '¢' : '—')
-  const [up, setUp] = useState(upSeed > 0 ? upSeed : 0)
-  const [dn, setDn] = useState(dnSeed > 0 ? dnSeed : 0)
-  const upRef = useRef(upSeed > 0 ? upSeed : 0)
-  const dnRef = useRef(dnSeed > 0 ? dnSeed : 0)
-
-  useEffect(() => { if (!(upRef.current > 0) && upSeed > 0) { upRef.current = upSeed; setUp(upSeed) } }, [upSeed])
-  useEffect(() => { if (!(dnRef.current > 0) && dnSeed > 0) { dnRef.current = dnSeed; setDn(dnSeed) } }, [dnSeed])
-
-  useEffect(() => {
-    if (!upToken && !dnToken) return
-    upRef.current = upSeed > 0 ? upSeed : 0
-    dnRef.current = dnSeed > 0 ? dnSeed : 0
-    setUp(upRef.current); setDn(dnRef.current)
-    const unsub = sub([upToken, dnToken], (token, ask) => {
-      if (ask == null || isNaN(ask)) return
-      if (token === upToken) {
-        if (Math.abs(ask - upRef.current) > 0.05) { upRef.current = ask; setUp(ask) }
-      } else if (token === dnToken) {
-        if (Math.abs(ask - dnRef.current) > 0.05) { dnRef.current = ask; setDn(ask) }
-      }
-    })
-    return unsub
-  }, [upToken, dnToken])
+  // ONE number per selector, never the token_asks map: selecting the map would
+  // re-render this tile whenever ANY of the ~28 streamed tokens moved. The
+  // server already gates its patches on a >0.05¢ move, so no local threshold.
+  const up = useStore(s => (upToken ? s.token_asks[upToken] ?? 0 : 0))
+  const dn = useStore(s => (dnToken ? s.token_asks[dnToken] ?? 0 : 0))
 
   const chip = (has: boolean, txt: string, color: string, arrow: string) => (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: SP.XXS, justifyContent: 'center', width: '100%' }}>
