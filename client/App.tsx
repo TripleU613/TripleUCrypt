@@ -12,7 +12,7 @@ import { MobileApp } from './components/mobile/MobileApp.js'
 import { Toasts } from './components/Toasts.js'
 import { playFx } from './lib/fx.js'
 import { tryReconnect } from './buses/MetaMaskBus.js'
-import { refreshBrowserPortfolio } from './buses/ClobTrade.js'
+import { refreshBrowserPortfolio, warmClob } from './buses/clobLazy.js'
 import { FONT, C, D, MS, Z, STR, BP } from './constants/index.js'
 
 // ── FPS reporter — measures real browser frame rate and reports to server ────
@@ -98,21 +98,21 @@ function useDeadState(): boolean {
 //     remaining streams a grace period, then reveal anyway so one slow/empty
 //     feed (e.g. a market with no comments) can't pin the loading screen.
 function useAppReady(): boolean {
-  const connected = useStore((s) => s._connected)
-  const windowsLen = useStore((s) => s.windows.length)
-  const clPrice = useStore((s) => s.cl_price)
-  const btcPrice = useStore((s) => s.btc_price)
-  const upAsk = useStore((s) => s.up_ask)
-  const dnAsk = useStore((s) => s.dn_ask)
-  const combined = useStore((s) => s.combined)
-  const candlesLen = useStore((s) => s.window_candles_1m.length)
-  const statsFresh = useStore((s) => s.stats_fresh)
-  const socialLoaded = useStore((s) => s.social_loaded_cid)
-
-  const essentials = connected && windowsLen > 0
-  const livePrice = clPrice > 0 || btcPrice > 0
-  const priced = upAsk > 0 || dnAsk > 0 || combined > 0
-  const charted = candlesLen > 0
+  // These selectors return BOOLEANS, never the raw values.
+  //
+  // This hook runs in App -- the ROOT of the tree -- and there is no React.memo
+  // anywhere below it, so anything that re-renders App re-renders the entire UI.
+  // Selecting `s.cl_price` therefore re-rendered every component in the app on
+  // every price tick, forever, purely to answer "has a price arrived yet?".
+  // Selecting `s.cl_price > 0` re-renders only when that answer changes: once.
+  //
+  // stats_fresh and social_loaded_cid used to be subscribed here too. They stopped
+  // being gates but the subscriptions stayed, so they kept re-rendering the whole
+  // tree for a value nothing read.
+  const essentials = useStore((s) => s._connected && s.windows.length > 0)
+  const livePrice = useStore((s) => s.cl_price > 0 || s.btc_price > 0)
+  const priced = useStore((s) => s.up_ask > 0 || s.dn_ask > 0 || s.combined > 0)
+  const charted = useStore((s) => s.window_candles_1m.length > 0)
   // statsFresh and socialLoaded are deliberately NOT gates. Each needs a separate
   // fetch to succeed (broker.getStats(), and a Polymarket trades fetch), so one
   // failing sub-request used to hold the whole reveal for the full grace period.
@@ -446,6 +446,12 @@ export function App() {
   // reads these) — not just while the wallet panel is open.
   const mmAddr = useStore((s) => s.mm_address)
   const browserMode = useStore((s) => s.sign_mode) === 'wallet'
+
+  // Prefetch the signing chunk the moment the user looks like they might trade,
+  // so the ~417 kB download overlaps their next action instead of landing in the
+  // middle of a buy click. No-op if already loaded; failures are retried by the
+  // real call.
+  useEffect(() => { if (browserMode) warmClob() }, [browserMode])
   useEffect(() => {
     if (!browserMode || !mmAddr) return
     refreshBrowserPortfolio(mmAddr)

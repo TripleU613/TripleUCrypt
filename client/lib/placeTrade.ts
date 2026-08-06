@@ -7,7 +7,9 @@
 
 import { useStore, toast } from '../store.js'
 import { call } from '../api.js'
-import { browserBuy, browserSell, ensureBrowserApprovals, refreshBrowserPortfolio, slippageCapCents, slippageFloorCents, freshHeldSize } from '../buses/ClobTrade.js'
+import { browserBuy, browserSell, ensureBrowserApprovals, refreshBrowserPortfolio, freshHeldSize } from '../buses/clobLazy.js'
+// Synchronous: needed to compute the price cap BEFORE deciding to load the signer.
+import { slippageCapCents, slippageFloorCents } from './slippage.js'
 import { ensurePolygon } from '../buses/MetaMaskBus.js'
 import { auditBrowserFill } from './auditFill.js'
 

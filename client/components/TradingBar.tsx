@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, type ReactNode } from 'react'
+import React, { useRef, useEffect, useState, type ReactNode } from 'react'
 import NumberFlow from '@number-flow/react'
 import { useStore } from '../store.js'
 import { call } from '../api.js'
@@ -1137,7 +1137,7 @@ function PanelTab({ rawTab }: { rawTab: string }) {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 
-export function TradingBar({ mobile = false }: { mobile?: boolean } = {}) {
+function TradingBarInner({ mobile = false }: { mobile?: boolean } = {}) {
   const viewingFuture = useStore(s => s.viewing_future) as boolean
   const viewingSlot = useStore(s => s.viewing_slot) as string
   const rawTab = useStore(s => s.panel_tab) as string
@@ -1171,3 +1171,8 @@ export function TradingBar({ mobile = false }: { mobile?: boolean } = {}) {
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const TradingBar = React.memo(TradingBarInner)

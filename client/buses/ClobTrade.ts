@@ -35,38 +35,10 @@ const SPENDERS = [
   NEG_RISK_ADAPTER,
 ]
 
-// ── Slippage protection (marketable buys) ─────────────────────────────────────
-// Mirror of src/banking/models.ts: a market/1-Tap FOK buy is capped at the live
-// ask × (1 + MAX_SLIPPAGE) so a thin book can't match up to the 99¢ ceiling.
-export const MAX_SLIPPAGE = 0.02 // 2%
-export const DEFAULT_TICK = 0.01 // 1¢ tick grid (binary markets)
-
-/**
- * Bound a marketable buy cap (CENTS) from the live ask (CENTS): ask × (1+slip),
- * clamped into the tick grid [tick, 1 - tick] and snapped up to the tick.
- * Returns null when `askCents` isn't a usable positive number.
- */
-export function slippageCapCents(askCents: number, tick = DEFAULT_TICK): number | null {
-  if (!(askCents > 0)) return null
-  const tickCents = tick * 100
-  const capped = askCents * (1 + MAX_SLIPPAGE)
-  const clamped = Math.min(100 - tickCents, Math.max(tickCents, capped))
-  return Math.ceil(clamped / tickCents) * tickCents
-}
-
-/**
- * Bound a marketable SELL floor (CENTS) from the live best bid (CENTS):
- * bid × (1 - MAX_SLIPPAGE), clamped into the tick grid [tick, 1 - tick] and
- * snapped DOWN to the tick. Returns null when `bidCents` isn't a usable positive
- * number, so the caller REFUSES the sell rather than dumping at a 1¢ floor.
- */
-export function slippageFloorCents(bidCents: number, tick = DEFAULT_TICK): number | null {
-  if (!(bidCents > 0)) return null
-  const tickCents = tick * 100
-  const floored = bidCents * (1 - MAX_SLIPPAGE)
-  const clamped = Math.min(100 - tickCents, Math.max(tickCents, floored))
-  return Math.floor(clamped / tickCents) * tickCents
-}
+// Slippage maths lives in lib/slippage.ts so callers can use it WITHOUT pulling
+// this module's web3 dependencies into the eager bundle. Re-exported here so
+// ClobTrade's own public surface is unchanged.
+export { MAX_SLIPPAGE, DEFAULT_TICK, slippageCapCents, slippageFloorCents } from '../lib/slippage.js'
 
 export interface BrowserFill { ok: boolean; error?: string; shares: number; price: number; usd: number; orderId: string; requested?: number; partial?: boolean }
 

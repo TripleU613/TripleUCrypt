@@ -401,7 +401,7 @@ function LoadMoreFooter() {
 
 // ── MarketPanel ───────────────────────────────────────────────────────────────
 
-export function MarketPanel() {
+function MarketPanelInner() {
   const socialLoaded = useStore(s => s.social_loaded_cid)
   const socialReady = !!socialLoaded
   const marketTab = useStore(s => s.market_tab)
@@ -459,3 +459,8 @@ export function MarketPanel() {
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const MarketPanel = React.memo(MarketPanelInner)

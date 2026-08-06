@@ -10,7 +10,7 @@
  *   tabs   Home/Wallet/Refill · Game⇄Real · Market · Activity
  */
 
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useStore } from '../../store.js'
 import { call } from '../../api.js'
 import { ChartView } from '../ChartView.js'
@@ -253,7 +253,7 @@ function useViewportScale() {
 }
 
 // ── Mobile app shell ──────────────────────────────────────────────────────────
-export function MobileApp({ unveiling }: { unveiling: boolean }) {
+function MobileAppInner({ unveiling }: { unveiling: boolean }) {
   const [view, setView] = useState<View>('home')
   const practice = useStore(s => s.practice)
   const { scale, w, h } = useViewportScale()
@@ -312,3 +312,8 @@ export function MobileApp({ unveiling }: { unveiling: boolean }) {
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const MobileApp = React.memo(MobileAppInner)

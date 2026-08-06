@@ -3,7 +3,7 @@
  * Replaces the stub. Ported from TripleUCrypt/ui/chart/chart_view.py
  */
 
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { animate } from 'animejs'
 import { playFx } from '../lib/fx.js'
 import { useStore } from '../store'
@@ -309,7 +309,7 @@ function useWindowTimeLabel(): string {
 
 // ── ChartView ─────────────────────────────────────────────────────────────────
 
-export function ChartView({ overlays = true, showWindowLabel }: { overlays?: boolean; showWindowLabel?: boolean } = {}): JSX.Element {
+function ChartViewInner({ overlays = true, showWindowLabel }: { overlays?: boolean; showWindowLabel?: boolean } = {}): JSX.Element {
   const showWin = showWindowLabel ?? overlays
   const mode         = useStore((s) => s.mode)
   const clPrice      = useStore((s) => s.cl_price)
@@ -356,3 +356,8 @@ export function ChartView({ overlays = true, showWindowLabel }: { overlays?: boo
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const ChartView = React.memo(ChartViewInner)

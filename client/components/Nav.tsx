@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { animate, stagger } from 'animejs'
 import { useStore } from '../store.js'
 import { call } from '../api.js'
@@ -274,7 +274,7 @@ const NAV_ORDER = [
 ]
 const CTRL_IDS = new Set(['buymode', 'practice', 'refill', 'walletToggle', 'theme', 'carousel'])
 
-export function Nav() {
+function NavInner() {
   const practice = useStore(s => s.practice)
   const buyMode = useStore(s => s.buy_mode)
   const theme = useStore(s => s.theme)
@@ -450,3 +450,8 @@ export function Nav() {
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const Nav = React.memo(NavInner)

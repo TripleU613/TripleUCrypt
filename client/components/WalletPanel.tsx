@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { animate } from 'animejs'
 import { useStore, toast } from '../store.js'
 import { call } from '../api.js'
@@ -6,7 +6,7 @@ import { C, FONT, D, SP, SZ, FS, FW, STR } from '../constants/index.js'
 import { playFx } from '../lib/fx.js'
 import { connectMetaMask, listWallets, subscribeWallets, onAddressChange, getWalletBalances, ensurePolygon,
   sendNativePol, sendErc20, sendTransaction, approveErc20, activeWalletId, forgetWallet, USDC_NATIVE, USDC_E } from '../buses/MetaMaskBus.js'
-import { refreshBrowserPortfolio, resetClobCaches } from '../buses/ClobTrade.js'
+import { refreshBrowserPortfolio, resetClobCaches, warmClob } from '../buses/clobLazy.js'
 
 // Browser-mode swap: server builds the 0x quote (API key is server-side), the
 // connected wallet approves (if needed) + signs the swap tx. Returns true on success.
@@ -629,7 +629,11 @@ function WalletModeSection() {
 
 // ── WalletPanel ───────────────────────────────────────────────────────────────
 
-export function WalletPanel() {
+function WalletPanelInner() {
+  // Opening the wallet is a strong signal the signing chunk is about to be
+  // needed; start fetching it now rather than on the first click.
+  useEffect(() => { warmClob() }, [])
+
   const mmAddress = useStore(s => s.mm_address)
   const walletAddress = useStore(s => s.wallet_address)
   const depositAddr = mmAddress || walletAddress
@@ -686,3 +690,8 @@ export function WalletPanel() {
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const WalletPanel = React.memo(WalletPanelInner)

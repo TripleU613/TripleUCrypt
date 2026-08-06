@@ -169,7 +169,7 @@ function PanelBody({ id }: { id: PanelId }) {
 }
 
 // ── LeftDock ────────────────────────────────────────────────────────────────
-export function LeftDock() {
+function LeftDockInner() {
   const init = useRef(loadState()).current
   const [order, setOrder] = useState<PanelId[]>(init.order)
   const [heights, setHeights] = useState<Record<PanelId, number>>(init.heights)
@@ -416,3 +416,8 @@ export function LeftDock() {
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const LeftDock = React.memo(LeftDockInner)

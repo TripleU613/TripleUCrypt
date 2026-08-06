@@ -21,7 +21,7 @@
  */
 
 import { call } from '../api.js'
-import { freshHeldSize } from '../buses/ClobTrade.js'
+import { freshHeldSize } from '../buses/clobLazy.js'
 
 /** Matches the reconcile delays used server-side: position indexing lags a fill
  *  by a second or two, so a single immediate look would cry wolf constantly. */

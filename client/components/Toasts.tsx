@@ -151,7 +151,7 @@ function ToastItem({ toast }: { toast: Toast }) {
 
 // ── Toast stack (bottom-center, newest floats up from the bottom) ────────────
 
-export function Toasts() {
+function ToastsInner() {
   const toasts = useStore((s) => s._toasts)
   if (!toasts.length) return null
   return (
@@ -176,3 +176,8 @@ export function Toasts() {
     </div>
   )
 }
+
+// Memoised: App is the root and re-renders on theme/mode/wallet changes.
+// These panels take no props (or one stable one) and read what they need from
+// the store themselves, so a parent re-render should never cascade into them.
+export const Toasts = React.memo(ToastsInner)
