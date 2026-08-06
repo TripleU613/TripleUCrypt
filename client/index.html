@@ -8,6 +8,27 @@
     <meta name="theme-color" content="#080808" />
     <meta name="color-scheme" content="dark light" />
 
+    <!-- Critical CSS, inlined deliberately.
+         The build emits ZERO .css assets: all ~1000 lines of CSS live in
+         client/theme.ts and are injected by injectTheme() from client/main.tsx,
+         which means NOTHING paints - not even the page background - until the
+         whole ~890 kB JS bundle has downloaded, parsed and executed. On a
+         light-preference OS that is a white flash for the entire load.
+         Only the background is duplicated here, on purpose: keep both values in sync with
+         --tc-bg in client/theme.ts (:36 dark, :157 light). Everything else, including
+         the boot overlay itself, stays fully owned by React - a prepainted logo
+         would render full-size and then snap to invisible when JS takes over. -->
+    <style>
+      :root { --tc-bg: #080808; }
+      html[data-theme="light"] { --tc-bg: #f4f5f7; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--tc-bg);
+        overflow: hidden;
+      }
+    </style>
+
     <!-- Icons -->
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

@@ -109,7 +109,20 @@ app.post('/rpc', async (req, res) => {
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // build layout: dist/server/index.js + dist/public  →  ../public
 const publicDir = path.join(__dirname, '../public')
-app.use(express.static(publicDir))
+
+// /assets/* filenames are CONTENT-HASHED by Vite, so they are immutable by
+// construction — a change produces a new filename. They were being served
+// `Cache-Control: public, max-age=0` (verified against the live host), which
+// made every reload re-validate ~890 kB. Cache them for a year.
+app.use('/assets', express.static(path.join(publicDir, 'assets'), {
+  immutable: true,
+  maxAge: '365d',
+}))
+
+// Everything else (index.html, icons, fonts, manifest) is NOT hashed, so it must
+// stay revalidated — index.html especially, since it points at the hashed assets
+// and a stale copy would reference a bundle that no longer exists after a deploy.
+app.use(express.static(publicDir, { etag: true, lastModified: true, maxAge: 0 }))
 
 // ── Health check ──────────────────────────────────────────────────────────────
 

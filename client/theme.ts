@@ -33,6 +33,8 @@ const CSS = `
 /* ── Dark theme tokens (default) ────────────────────────────── */
 :root {
   /* surfaces */
+  /* NOTE: --tc-bg is ALSO inlined in client/index.html's critical <style> so the
+     page has a background before this JS-injected CSS exists. Change both. */
   --tc-bg:          #080808;
   --tc-bg-deep:     #000000;
   --tc-card:        #0f0f0f;

@@ -18,18 +18,29 @@ import { FONT, C, D, MS, Z, STR, BP } from './constants/index.js'
 // ── FPS reporter — measures real browser frame rate and reports to server ────
 // Server's power manager uses this to downgrade the performance tier on drops.
 // Samples over a 2-second window; reports at most once per window.
-function useFpsReporter() {
+// `revealed` gates REPORTING (not measuring). During the boot animation the
+// browser is running a scramble, a spring bounce, a burst and a 22px backdrop
+// blur, so real measured samples were 42, 39, 57, 60, 60 fps. The server's power
+// manager drops to ECO on a single sample below 45 with no hysteresis, so the
+// intro was telling the server "weak machine" at the exact moment the curtain
+// lifted — halving stream cadence for the 10-15s the user spends judging the app.
+// Report only once the app is revealed, and skip the first window after that
+// (the burst is still settling).
+function useFpsReporter(revealed: boolean) {
   useEffect(() => {
+    if (!revealed) return
     let frames = 0
     let windowStart = performance.now()
     let raf = 0
+    let skipFirst = true
 
     function tick() {
       frames++
       const now = performance.now()
       if (now - windowStart >= MS.FPS_WINDOW) {
         const fps = Math.round((frames / (now - windowStart)) * 1000)
-        call('report_fps', fps)
+        if (skipFirst) skipFirst = false
+        else call('report_fps', fps)
         frames = 0
         windowStart = now
       }
@@ -38,7 +49,7 @@ function useFpsReporter() {
 
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [])
+  }, [revealed])
 }
 
 // ── Dead-state detection ──────────────────────────────────────────────────────
@@ -102,8 +113,14 @@ function useAppReady(): boolean {
   const livePrice = clPrice > 0 || btcPrice > 0
   const priced = upAsk > 0 || dnAsk > 0 || combined > 0
   const charted = candlesLen > 0
+  // statsFresh and socialLoaded are deliberately NOT gates. Each needs a separate
+  // fetch to succeed (broker.getStats(), and a Polymarket trades fetch), so one
+  // failing sub-request used to hold the whole reveal for the full grace period.
+  // Neither is needed to trade, and both components already handle their own
+  // absence: the scoreboard renders "—" until fresh, and the social panel has a
+  // skeleton keyed off social_loaded_cid.
   const fullyReady =
-    essentials && livePrice && priced && charted && statsFresh && !!socialLoaded
+    essentials && livePrice && priced && charted
 
   const [ready, setReady] = useState(false)
   const [fallbackHit, setFallbackHit] = useState(false)
@@ -177,6 +194,13 @@ function BootOverlay({ ready, onUnveil }: { ready: boolean; onUnveil: () => void
     if (!reduceRef.current && !lettersReadyRef.current) return // wait for decrypt
     explodedRef.current = true
     onUnveil()  // unblur the app underneath, in lockstep with the explosion
+    // The app is interactive the moment it goes sharp, but this overlay stays
+    // mounted for BOOT_BURST while it fades — so a click on BUY in that window
+    // landed on an invisible full-screen curtain and did nothing. (theme.ts has
+    // a `.tc-boot-done { pointer-events: none }` rule for exactly this, but
+    // nothing ever adds that class, so it was dead code.) Release the pointer
+    // the instant we unveil.
+    if (overlayRef.current) overlayRef.current.style.pointerEvents = 'none'
     try { bounceRef.current?.pause() } catch { /* ignore */ }
     try { logoLoopRef.current?.pause() } catch { /* ignore */ }
 
@@ -386,7 +410,13 @@ export function App() {
   const feedDegraded = useStore((s) => s.feed_degraded)
   const showWallet = useStore((s) => s.show_wallet)
   const practice = useStore((s) => s.practice)
-  useFpsReporter()
+  // unveiling flips at the moment of the boot explosion — the app unblurs and
+  // its columns animate in together with the burst, not when `ready` first goes
+  // true (which can be mid-decrypt, behind the still-opaque overlay).
+  const [unveiling, setUnveiling] = useState(false)
+  // Report FPS only after the reveal — the boot animation's own frame drops used
+  // to get reported as a weak machine. See useFpsReporter.
+  useFpsReporter(unveiling)
 
   // Apply theme from store
   const theme = useStore((s) => s.theme)
@@ -425,10 +455,6 @@ export function App() {
 
   // App is revealed only once everything is loaded AND functioning.
   const ready = useAppReady()
-  // unveiling flips at the moment of the boot explosion — the app unblurs and
-  // its columns animate in together with the burst, not when `ready` first goes
-  // true (which can be mid-decrypt, behind the still-opaque overlay).
-  const [unveiling, setUnveiling] = useState(false)
 
   const isMobile = useIsMobile()
 

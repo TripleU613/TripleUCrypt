@@ -22,10 +22,19 @@ export const MS = {
   // decrypt (always) → bounce/"loading" (while waiting) → explode (the instant
   // the app reports ready). The explosion fires immediately on ready — it's just
   // an overlay — so the only floor is finishing the decrypt intro.
-  BOOT_SCRAMBLE:    2_500,  // decrypt decode duration (slow, always plays)
-  BOOT_LOADING_MIN: 2_000,  // min time the up/down "loading" bounce is shown
+  // NOTE: BOOT_SCRAMBLE is NOT the floor it looks like. Measured, anime's
+  // scrambleText finishes in ~400ms (letters ready ~613ms) regardless of this
+  // number, so tuning it does nothing. The real floor was BOOT_LOADING_MIN +
+  // BOOT_BURST, which held the app behind an opaque curtain for ~2.6s after it
+  // was already sharp and ~4.0s before the overlay unmounted -- while every
+  // field the reveal waits on arrives in the FIRST SSE snapshot, ~9ms after the
+  // GET. The boot was never slow; it was deliberately held.
+  BOOT_SCRAMBLE:    2_500,  // decrypt decode duration (self-limiting, see above)
+  BOOT_LOADING_MIN:   700,  // min beat for the "loading" bounce (was 2_000)
   BOOT_BURST:       1_300,  // explosion/unblur duration before the overlay unmounts
-  BOOT_FALLBACK: 9_000,  // max grace wait for non-essential streams before reveal
+  // Grace wait for non-essential streams. Was 9_000, which meant one failing
+  // sub-fetch pinned the user on a bouncing wordmark for nine seconds.
+  BOOT_FALLBACK:    2_500,
 
   // ── Connection / dead-state ───────────────────────────────────────────────
   DEAD_MS:    30_000,  // clock_tick staleness threshold (tolerant of reconnects)
