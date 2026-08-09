@@ -7,7 +7,8 @@
 git clone https://github.com/TripleU613/TripleUCrypt.git
 cd TripleUCrypt
 
-# 2. Set up credentials (optional — app works in read-only mode without them)
+# 2. Set up credentials (optional — without them the app starts in practice mode,
+#    and browser-wallet signing needs no credentials at all)
 cp .env.example .env
 # Edit .env with your wallet credentials
 

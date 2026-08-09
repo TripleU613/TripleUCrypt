@@ -3,18 +3,19 @@
 A real-time crypto **up/down trading terminal** for [Polymarket](https://polymarket.com),
 built with Node.js/TypeScript (Express + Vite + React). Live candlestick charts, an order book,
 one-click buy/sell, and live positions — across BTC, ETH, SOL, XRP, DOGE, HYPE and BNB
-5-minute and 15-minute windows.
+5-minute, 15-minute, 1-hour and 1-day windows.
 
 ![TripleUCrypt](assets/screenshot.png)
 
 ## What it does
 
 - **Live charts** (custom HTML5 canvas engine, ~60fps requestAnimationFrame) — Line,
-  Probability and Candlestick modes, 5m / 15m intervals, auto-zoomed to the visible range.
-  Candles stream live from Kraken; the forming bar updates every second.
+  Probability and Candlestick modes, 5m / 15m / 1h / 1d intervals, auto-zoomed to the visible
+  range. Candles stream live from Kraken; the forming bar updates every second.
 - **All 7 assets** — click any market card to switch the chart and trade panel to that asset.
-- **14 live markets** — every BTC/ETH/SOL/XRP/DOGE/HYPE/BNB up/down window, discovered from
-  Polymarket and streamed over the CLOB WebSocket (best ask per side, combined, arb badge).
+- **Live markets across four horizons** — every BTC/ETH/SOL/XRP/DOGE/HYPE/BNB up/down window,
+  discovered from Polymarket and streamed over the CLOB WebSocket (best ask per side,
+  combined, arb badge).
 - **Order book** — full depth per side with spread + last price.
 - **Trade panel** — size presets, live payout/profit, one-click buy, sell with live P&L on
   open positions.
@@ -30,13 +31,14 @@ one-click buy/sell, and live positions — across BTC, ETH, SOL, XRP, DOGE, HYPE
 
 Market data needs **no credentials**. Credentials are required only to place real trades.
 
-## Two modes
+## Modes
 
-- **Read-only (default — no `.env`):** charts, markets and order book are fully live. The
-  trade buttons show *"Add credentials in .env to trade."* Nothing can place an order.
-- **Configured:** add `POLY_PRIVATE_KEY` + `POLY_WALLET_ADDRESS` to `.env` → buy/sell, balance
-  and positions go live against the Polymarket CLOB via
-  [`@polymarket/clob-client-v2`](https://github.com/Polymarket/clob-client).
+- **Practice (default — no `.env`, no wallet):** charts, markets and order book are fully
+  live; trades run against a local paper ledger with $100 of play money. Nothing touches a
+  real balance. This is where a first run lands.
+- **Live:** real, irreversible orders on the Polymarket CLOB via
+  [`@polymarket/clob-client-v2`](https://github.com/Polymarket/clob-client). Needs a signer —
+  see below; there are three, and they differ mainly in *who holds the key*.
 
 ## Setup
 
@@ -46,7 +48,7 @@ Requires **Node.js 22+**.
 git clone https://github.com/TripleU613/TripleUCrypt
 cd TripleUCrypt
 npm ci
-cp .env.example .env        # optional — leave the placeholders for read-only mode
+cp .env.example .env        # optional — skip it entirely to start in practice mode
 npm run dev                 # frontend :5173 (Vite), backend :8200 (Express)
 ```
 
@@ -56,28 +58,60 @@ there's no separate frontend port to open.)
 
 ## Enabling trading
 
-There are two ways in (market data and charts always work with no credentials):
+Market data and charts always work with no credentials at all. To place real orders you
+pick a **signer**. Three exist; they trade off custody against convenience:
 
-**Easiest — generate a wallet (no key to paste).** Leave `.env` unset, switch to live,
-open the **Wallet** panel and click **Generate trading wallet**. The app creates a
-dedicated trading key, stores it locally under `~/.triplecrypt` (`trading_wallet.json`,
-locked `0600` — or an encrypted keystore if you set a password), and signs orders
-**server-side** (instant, no browser popups). Fund the address shown with **USDC on
-Polygon**, plus a little **POL** for the one-time on-chain trading approval (a self-funded
-wallet pays its own gas).
+| Signer | Who holds the key | Setup | Per-order UX |
+|--------|-------------------|-------|--------------|
+| **Browser wallet** *(start here)* | your MetaMask extension | nothing to configure | one signature popup |
+| **Generated wallet** | this app, on your machine | one click | instant, no popups |
+| **Existing `.env` key** | this app, from a file you write | paste a private key | instant, no popups |
 
-**Power users — bring an existing Polymarket key.** Fill in `.env` (see `.env.example`):
+### 1. Browser wallet — recommended for a first run
+
+**No `.env`, nothing to paste, and no key ever reaches this app.** MetaMask signs every
+order; the server only relays the signed payload. That means the app *cannot* move your
+money without a click you see — which is the right posture for running a stranger's
+real-money code.
+
+1. Start the app (Setup, above) and open the **Wallet** panel.
+2. Flip **Practice → Live**, set signing to **Browser (wallet)**, and connect MetaMask.
+3. Fund the connected address on **Polygon** with **USDC.e**
+   (`0x2791bca1…`, the bridged token — *not* native USDC) plus a little **POL** for gas.
+4. Your first buy triggers two one-time on-chain approvals; after that it's one signature
+   per order.
+
+Worth knowing: this signs as a plain EOA, so it trades from **the connected wallet itself**
+— not from the gasless balance inside an existing Polymarket account. Holding native USDC
+instead of USDC.e is the usual reason a funded wallet still shows $0; the Wallet panel's
+swap card converts it.
+
+### 2. Generated wallet — best for a server / headless deploy
+
+Leave `.env` unset, switch to Live, then **Wallet → Generate trading wallet**. The app
+creates a dedicated key, stores it under `~/.triplecrypt` (`trading_wallet.json`, mode
+`0600` — or an encrypted keystore if you set a password), and signs **server-side**: no
+popups, instant 1-tap orders. Fund the address shown with **USDC on Polygon** plus a little
+**POL** for the one-time approval.
+
+This is the only option that works without a browser attached, so it's the one to use on a
+VPS. The trade-off is real: the process can sign on its own. Fund it like a burner.
+
+### 3. Existing Polymarket key — for setups that already have one
 
 ```bash
 POLY_PRIVATE_KEY=0x...       # your Ethereum (Polygon) wallet private key
 POLY_WALLET_ADDRESS=0x...    # your Polymarket (proxy/funder) wallet address
 ```
 
-If present, these take **precedence** over a generated wallet, so existing setups are
-unchanged. The CLOB L2 API credentials are derived from your private key automatically at
-runtime (the canonical Polymarket flow) — you do not need to paste
-`api_key`/`secret`/`passphrase`, and any stored ones are ignored. `.env.example` documents
-the optional extras (Polygon RPC override, deposit history, the gated send feature).
+If present these take **precedence** over a generated wallet, so existing setups are
+unchanged. CLOB L2 API credentials are derived from the private key at runtime (the
+canonical Polymarket flow) — you never paste `api_key`/`secret`/`passphrase`, and any stored
+ones are ignored. `.env.example` documents the optional extras (Polygon RPC override,
+deposit history, the gated send feature).
+
+If you're evaluating this repo for the first time, **don't start here** — pasting the key to
+a funded account into unfamiliar code is the riskiest of the three. Use option 1.
 
 The app reads secrets **only** from local files (git-ignored, never committed) and passes
 the key solely to `@polymarket/clob-client-v2` against `clob.polymarket.com` — it is never
@@ -86,7 +120,7 @@ logged or sent to the browser.
 ## Docker
 
 ```bash
-cp .env.example .env        # optional — skip for read-only/practice mode
+cp .env.example .env        # optional — skip for practice mode / browser-wallet signing
 docker compose up -d
 ```
 

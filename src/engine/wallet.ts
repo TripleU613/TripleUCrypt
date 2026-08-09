@@ -3,6 +3,7 @@ import { notify } from './notify.js'
 import type { AppState } from './state.js'
 import { defaultWallet, localWalletAddress } from '../banking/local-wallet.js'
 import { getBroker, armLiveOps as bankArmLiveOps, allowanceStatus } from '../banking/index.js'
+import { liveSignerReady } from './trading.js'
 
 // ── Wallet IO ───────────────────────────────────────────────────────────────
 // The previous code required a non-existent '../banking/wallet.js' via CommonJS
@@ -108,11 +109,18 @@ export function closeWallet(): void {
 
 export function setSignMode(mode: string): void {
   patch('sign_mode', mode)
+  // Switching to Browser signing makes live mode tradeable with no server key —
+  // but `trading_configured` used to wait for the 5s scoreboard loop to notice,
+  // so the trade buttons stayed dead for up to five seconds immediately after
+  // the user did the correct thing. Settle it on the spot instead.
+  if (!state.practice) patch('trading_configured', liveSignerReady())
 }
 
 export function toggleSignMode(): void {
   if (state.practice) { patch('sign_mode', 'instant'); return }
-  patch('sign_mode', state.sign_mode === 'wallet' ? 'instant' : 'wallet')
+  // Route through setSignMode so the toggle gets the same immediate
+  // trading_configured settle as the Wallet panel's segmented control.
+  setSignMode(state.sign_mode === 'wallet' ? 'instant' : 'wallet')
 }
 
 export async function generateWallet(): Promise<void> {

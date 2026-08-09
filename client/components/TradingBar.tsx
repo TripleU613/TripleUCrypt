@@ -290,7 +290,7 @@ function CtaButton({ children }: { children: ReactNode }) {
                     borderRadius: D.R_CTRL, background: 'transparent', border: '1px dashed var(--tc-border-hi)',
                     userSelect: 'none' }}>
         <span style={{ fontSize: FS.MD, fontWeight: FW.BOLD, fontFamily: FONT.MONO, color: 'var(--tc-dim2)' }}>
-          {STR.NO_CREDS}
+          {STR.NO_SIGNER}
         </span>
       </div>
     )
@@ -375,7 +375,7 @@ function Mode1Tap({ mobile = false }: { mobile?: boolean } = {}) {
                     borderRadius: D.R_BTN, background: 'var(--tc-panel)', border: '1px dashed var(--tc-border-hi)',
                     boxShadow: 'var(--tc-elev-1)', userSelect: 'none' }}>
         <span style={{ fontSize: FS.MD, fontWeight: FW.BOLD, fontFamily: FONT.MONO, color: 'var(--tc-dim2)' }}>
-          {STR.NO_CREDS}
+          {STR.NO_SIGNER}
         </span>
       </div>
     )

@@ -159,20 +159,36 @@ export function setLimitPrice(price: string): void {
   patch('limit_price', price)
 }
 
+/**
+ * Can live mode actually sign an order right now?
+ *
+ * TWO signers qualify, not one: a server-side broker (an `.env` key or a
+ * generated local wallet), OR the user's own browser wallet in Browser mode —
+ * there the extension holds the key and the server never needs one.
+ *
+ * This used to test only `getBroker()`, which meant someone who intended to
+ * sign in MetaMask was told "add credentials to .env" — pointing the safest
+ * setup (no key on the box at all) at the riskiest one (paste your private key).
+ */
+export function liveSignerReady(): boolean {
+  return !!getBroker() || state.sign_mode === 'wallet'
+}
+
 export function togglePractice(): void {
   const next = !state.practice
   patch('practice', next)
   if (next) patch('sign_mode', 'instant')
-  // Practice mode is always configured; live needs a real broker
-  const liveReady = !!getBroker()
+  // Practice mode is always configured; live needs a signer (either kind).
+  const liveReady = liveSignerReady()
   patch('trading_configured', next ? true : liveReady)
   if (next) {
     notify('Practice mode on', 'log')
   } else if (liveReady) {
     notify('Live mode on — real funds', 'warn')
   } else {
-    // Switched to live with no credentials — surface the blocker right away.
-    notify('Live trading not configured — add credentials to .env', 'error')
+    // Live with no signer yet. Not an error — a next step, and there are two of
+    // them. Name the browser wallet first: it needs no config and no key here.
+    notify('Live mode — choose a signer in the Wallet panel: connect a browser wallet, or generate/configure a server wallet', 'warn')
   }
   // Refresh balances/positions for the new mode so live↔practice swap their
   // money + holdings instead of showing the other mode's figures.
@@ -212,8 +228,8 @@ export async function runRefreshBalance(): Promise<void> {
   // Browser (wallet) mode: the connected wallet's balances are read client-side
   // and own these fields — don't let the server (env wallet) clobber them.
   if (!state.practice && state.sign_mode === 'wallet') { patch('trading_configured', true); return }
-  // Set configured first — practice is always ready, live needs a real broker
-  patch('trading_configured', state.practice ? true : !!getBroker())
+  // Set configured first — practice is always ready, live needs a signer.
+  patch('trading_configured', state.practice ? true : liveSignerReady())
   const broker = getBroker()
   if (!broker) {
     // Live mode with no credentials — show zeros, not leftover practice money.

@@ -30,7 +30,10 @@ export const STR = {
   GRP_PERF:     'Performance',
 
   // ── Trading bar ───────────────────────────────────────────────────────────
-  NO_CREDS:       'Add credentials in .env to trade',
+  // Shown on the disabled buy control in live mode. It used to read "Add
+  // credentials in .env to trade", which named only ONE of the three signers —
+  // and the riskiest one at that. All three start in the Wallet panel.
+  NO_SIGNER:      'Connect a wallet to trade',
   PRACTICE_RESET: 'Practice reset to $100',
   STATUS_BUY:     'Placing order…',
   STATUS_OK:      'Practice mode ON',
