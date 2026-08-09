@@ -57,6 +57,11 @@ export interface TradeAuditEntry {
    *  extension). Browser-signed fills are reported BY the client, so they are a
    *  diary of what it observed rather than something the server witnessed. */
   signer?: 'server' | 'browser'
+  /** Signed but REFUSED by the exchange. No money moved, but the wallet did sign
+   *  — worth a record so "why didn't my order go through" is answerable later. */
+  rejected?: boolean
+  /** The exchange's own refusal text, verbatim (truncated). */
+  error?: string
 }
 
 /**
@@ -73,6 +78,8 @@ export function recordTrade(entry: Omit<TradeAuditEntry, 'ts'>): void {
   try {
     const bits = [
       `[trade] ${full.action.toUpperCase()}`,
+      // Right after the verb, so a rejection can never be skim-read as a fill.
+      full.rejected ? 'REJECTED' : '',
       `mode=${full.mode}`,
       full.asset ? `asset=${full.asset}` : '',
       full.direction ? `dir=${full.direction}` : '',
@@ -82,6 +89,7 @@ export function recordTrade(entry: Omit<TradeAuditEntry, 'ts'>): void {
       full.claimed != null ? `claimed=${full.claimed}` : '',
       full.partial ? 'PARTIAL' : '',
       full.ref ? `ref=${full.ref}` : '',
+      full.error ? `err=${full.error}` : '',
     ].filter(Boolean)
     console.log(bits.join(' '))
   } catch { /* logging must never break a fill */ }

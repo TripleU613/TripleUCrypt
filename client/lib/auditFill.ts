@@ -96,3 +96,28 @@ export async function auditBrowserFill(
     console.warn('[audit] could not record browser fill:', (e as Error)?.message)
   }
 }
+
+/**
+ * Record an order that was SIGNED but REJECTED.
+ *
+ * A rejected order moves no money, but it is not a non-event: the user's wallet
+ * signed something and the exchange refused it. Without a record the only trace
+ * was a toast that vanished on the next render, so "why did my order not go
+ * through" had no answer after the fact. Fire-and-forget; never throws.
+ */
+export async function auditBrowserReject(
+  action: 'buy' | 'sell',
+  rec: BrowserFillRecord,
+  error: string,
+): Promise<void> {
+  try {
+    await call('record_browser_fill', {
+      action,
+      ...rec,
+      rejected: true,
+      error: String(error || 'rejected').slice(0, 200),
+    })
+  } catch (e) {
+    console.warn('[audit] could not record rejected order:', (e as Error)?.message)
+  }
+}

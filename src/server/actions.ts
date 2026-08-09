@@ -539,6 +539,9 @@ export const actions: Record<string, (args: unknown[]) => Promise<void>> = {
       ref: str(p['ref'], 120),
       partial: p['partial'] === true,
       signer: 'browser',
+      ...(p['rejected'] === true
+        ? { rejected: true, error: str(p['error'], 200) }
+        : {}),
       ...(p['unreconciled'] === true
         ? { unreconciled: true, observed_shares: num(p['observed_shares']) ?? 0 }
         : {}),

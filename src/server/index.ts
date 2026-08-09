@@ -38,11 +38,26 @@ app.use('/clob', express.raw({ type: () => true, limit: '2mb' }), async (req, re
     if (req.method !== 'GET' && req.method !== 'HEAD' && body && body.length) init.body = new Uint8Array(body)
     const r = await fetch(target, init)
     const buf = Buffer.from(await r.arrayBuffer())
+    // Log FAILURES. This proxy used to pass responses straight through with no
+    // record, so when a browser-signed order was rejected the only trace was a
+    // toast that vanished -- nothing to read afterwards, and no way to tell a
+    // geo/compliance refusal from a malformed order or an auth problem. For a
+    // real-money path that is the wrong trade: a failed order must leave a trail.
+    //
+    // NEVER log the request headers or body: poly_signature / poly_apikey /
+    // poly_passphrase live there, and the body carries the signed order. Only the
+    // method, path and the upstream's own response are recorded.
+    if (r.status >= 400) {
+      const path = req.url.split('?')[0]
+      console.warn(`[clob] ${req.method} ${path} -> ${r.status}: ${buf.toString('utf8').slice(0, 300)}`)
+    }
     res.status(r.status)
     const ct = r.headers.get('content-type'); if (ct) res.set('content-type', ct)
     res.send(buf)
   } catch (e) {
-    res.status(502).json({ ok: false, error: String(e instanceof Error ? e.message : e) })
+    const msg = String(e instanceof Error ? e.message : e)
+    console.warn(`[clob] ${req.method} ${req.url.split('?')[0]} -> transport error: ${msg}`)
+    res.status(502).json({ ok: false, error: msg })
   }
 })
 

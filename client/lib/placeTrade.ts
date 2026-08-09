@@ -11,7 +11,7 @@ import { browserBuy, browserSell, ensureBrowserApprovals, refreshBrowserPortfoli
 // Synchronous: needed to compute the price cap BEFORE deciding to load the signer.
 import { slippageCapCents, slippageFloorCents } from './slippage.js'
 import { ensurePolygon } from '../buses/MetaMaskBus.js'
-import { auditBrowserFill } from './auditFill.js'
+import { auditBrowserFill, auditBrowserReject } from './auditFill.js'
 
 function isBrowserMode(): boolean {
   const s = useStore.getState()
@@ -83,7 +83,12 @@ export async function placeBuy(side: string, sizeOverride?: number): Promise<voi
         shares: fill.shares, price_cents: fill.price, usd: fill.usd, ref: fill.orderId,
       }, addr, fill.shares, 'atLeast')
     }
-    else toast(fill.error || 'Order not filled', 'error')
+    else {
+      toast(fill.error || 'Order not filled', 'error')
+      void auditBrowserReject('buy', {
+        asset: useStore.getState().chart_asset, direction: side, token: tokenId, usd,
+      }, fill.error || 'Order not filled')
+    }
   } catch (e) {
     console.error('[trade] buy error', e)
     toast((e as Error)?.message || 'Order failed', 'error')
@@ -155,7 +160,12 @@ export async function placeSell(token: string, shares: number, serverArg: string
         ref: fill.orderId, partial: fill.partial,
       }, addr, Math.max(0, (fresh?.size ?? shares) - fill.shares), 'atMost')
     }
-    else toast(fill.error || 'Sell not filled', 'error')
+    else {
+      toast(fill.error || 'Sell not filled', 'error')
+      void auditBrowserReject('sell', {
+        asset: useStore.getState().chart_asset, token, shares,
+      }, fill.error || 'Sell not filled')
+    }
   } catch (e) {
     console.error('[trade] sell error', e)
     toast((e as Error)?.message || 'Sell failed', 'error')
