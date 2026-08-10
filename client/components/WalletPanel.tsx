@@ -563,7 +563,7 @@ function WalletModeSection() {
   const pickTxt: React.CSSProperties = { fontSize: FS.SM, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, color: C.WHITE }
 
   return (
-    <Section title={STR.WALLET_SEC_MODE} tip="Which wallet trades. Server Wallet uses the .env key — instant, no popups. Browser Wallet trades from your connected extension (e.g. MetaMask), signing each order with a popup; it must be on the Polygon network.">
+    <Section title={STR.WALLET_SEC_MODE} tip={STR.WALLET_MODE_TIP}>
       <div ref={segRef} style={{ position: 'relative', display: 'flex', gap: SP.XXS, background: 'var(--tc-card-alt)', borderRadius: '8px', padding: SP.XXS, border: '1px solid var(--tc-border)' }}>
         <div ref={indRef} style={{
           position: 'absolute', top: SP.XXS, bottom: SP.XXS, left: 0, width: 0, opacity: 0,
@@ -677,14 +677,15 @@ function PolyFunderField({ signer }: { signer: string }) {
       .catch(() => setCheck('Could not reach Polymarket to verify'))
   }
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: SP.XS, width: '100%' }}>
-      <span style={{ fontSize: FS.NANO, fontWeight: FW.XBOLD, letterSpacing: '0.06em', color: 'var(--tc-dim2)', fontFamily: FONT.MONO }}>
-        {STR.POLY_FUNDER_LABEL}
-      </span>
+  // Only surface a status line when there is something FUNCTIONAL to say — a
+  // validation error, or the verify result. The explanatory prose lives in the
+  // info hover, not on the page.
+  const statusText = !valid ? STR.POLY_FUNDER_BAD : check || ''
+  const statusColor = !valid ? C.RED : /Recognised/.test(check) ? C.GREEN : C.GOLD
 
-      {/* The no-separate-tab path: set Polymarket up in an embedded server browser.
-          The manual paste field below stays as a fallback. */}
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: SP.SM, width: '100%' }}>
+      {/* Primary action: set up in the embedded browser. No tab, no paste. */}
       <button
         onClick={() => setShowBrowser(v => !v)}
         style={{
@@ -692,7 +693,7 @@ function PolyFunderField({ signer }: { signer: string }) {
           border: `1px solid ${C.GREEN_BORDER}`, background: C.GREEN_BG, color: C.GREEN,
           fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, cursor: 'pointer',
         }}
-      >{showBrowser ? 'Hide Polymarket setup' : 'Set up Polymarket here (no tab)'}</button>
+      >{showBrowser ? STR.POLY_SETUP_HIDE : STR.POLY_SETUP_OPEN}</button>
 
       {showBrowser && (
         <div style={{ width: '100%', height: '520px', maxHeight: '70vh' }}>
@@ -700,13 +701,15 @@ function PolyFunderField({ signer }: { signer: string }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: SP.XS, width: '100%' }}>
+      {/* Manual maker address — collapsed to an icon-labelled row + info hover.
+          Everything that used to be three paragraphs is now in the tooltip. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: SP.XS, width: '100%' }}>
         <input
           value={val}
-          onChange={e => { setVal(e.target.value); setSaved(false) }}
+          onChange={e => { setVal(e.target.value); setSaved(false); setCheck('') }}
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') commit() }}
-          placeholder="0x… (Polymarket → Deposit)"
+          placeholder={STR.POLY_FUNDER_PLACEHOLDER}
           spellCheck={false}
           autoComplete="off"
           style={{
@@ -719,6 +722,7 @@ function PolyFunderField({ signer }: { signer: string }) {
         <button
           onClick={commit}
           disabled={!valid}
+          title={STR.POLY_FUNDER_SAVE}
           style={{
             flexShrink: 0, padding: `${SP.SM} ${SP.LG}`, borderRadius: D.R_BTN,
             border: `1px solid ${valid ? C.GREEN_BORDER : 'var(--tc-border)'}`,
@@ -727,13 +731,12 @@ function PolyFunderField({ signer }: { signer: string }) {
             cursor: valid ? 'pointer' : 'default',
           }}
         >{saved ? STR.POLY_FUNDER_SAVED : STR.POLY_FUNDER_SAVE}</button>
+        <InfoTip text={STR.POLY_FUNDER_TIP} />
       </div>
-      <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: !valid ? C.RED : isEoa ? C.GOLD : 'var(--tc-dim3)', lineHeight: 1.4 }}>
-        {!valid ? STR.POLY_FUNDER_BAD : isEoa ? STR.POLY_FUNDER_IS_EOA : val ? STR.POLY_FUNDER_OK : STR.POLY_FUNDER_HINT}
-      </span>
-      {check && (
-        <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: /Recognised/.test(check) ? C.GREEN : C.GOLD, lineHeight: 1.4 }}>
-          {check}
+
+      {statusText && (
+        <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: statusColor, lineHeight: 1.4 }}>
+          {statusText}
         </span>
       )}
     </div>
