@@ -22,9 +22,18 @@ FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# curl for the healthcheck
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+# curl for the healthcheck; chromium for the guided-onboarding server browser.
+# node:22-slim is Debian bookworm, where `chromium` is a real .deb (Ubuntu ships it
+# only as a snap, which does not work in a container) — so apt gives a working
+# headless-capable browser plus its shared-lib and font dependencies. Playwright is
+# pointed at it via PLAYWRIGHT_CHROMIUM_PATH below; playwright-core downloads no
+# browser of its own. The onboarding browser is launched on demand and killed when
+# idle, so this only costs disk at rest, not RAM.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates \
+      chromium fonts-liberation fonts-unifont \
     && rm -rf /var/lib/apt/lists/*
+ENV PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
 
 # Production dependencies only.
 COPY package.json package-lock.json ./

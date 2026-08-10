@@ -33,6 +33,7 @@ export default defineConfig({
       "^/sse$": "http://localhost:8200",
       "^/action/": "http://localhost:8200",
       "^/health$": "http://localhost:8200",
+      "^/onboard/ws$": { target: "ws://localhost:8200", ws: true },
       "^/swap-quote$": "http://localhost:8200",
       "^/allowance": "http://localhost:8200",
       // Route CLOB through Polymarket directly (strip /clob), same-origin to the browser.

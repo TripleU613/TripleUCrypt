@@ -9,6 +9,7 @@ import { connectMetaMask, listWallets, subscribeWallets, onAddressChange, getWal
 import { refreshBrowserPortfolio, resetClobCaches, warmClob, verifyMaker } from '../buses/clobLazy.js'
 // localStorage-only module: safe to import eagerly (ClobTrade's web3 deps stay lazy).
 import { getPolyFunder, setPolyFunder, isAddressLike } from '../lib/polyFunder.js'
+import { OnboardBrowser } from './wallet/OnboardBrowser.js'
 
 // Browser-mode swap: server builds the 0x quote (API key is server-side), the
 // connected wallet approves (if needed) + signs the swap tx. Returns true on success.
@@ -653,6 +654,7 @@ function PolyFunderField({ signer }: { signer: string }) {
   const isEoa = val.trim().toLowerCase() === signer.toLowerCase()
 
   const [check, setCheck] = useState('')
+  const [showBrowser, setShowBrowser] = useState(false)
 
   const commit = () => {
     if (!valid) return
@@ -680,6 +682,24 @@ function PolyFunderField({ signer }: { signer: string }) {
       <span style={{ fontSize: FS.NANO, fontWeight: FW.XBOLD, letterSpacing: '0.06em', color: 'var(--tc-dim2)', fontFamily: FONT.MONO }}>
         {STR.POLY_FUNDER_LABEL}
       </span>
+
+      {/* The no-separate-tab path: set Polymarket up in an embedded server browser.
+          The manual paste field below stays as a fallback. */}
+      <button
+        onClick={() => setShowBrowser(v => !v)}
+        style={{
+          width: '100%', padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
+          border: `1px solid ${C.GREEN_BORDER}`, background: C.GREEN_BG, color: C.GREEN,
+          fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, cursor: 'pointer',
+        }}
+      >{showBrowser ? 'Hide Polymarket setup' : 'Set up Polymarket here (no tab)'}</button>
+
+      {showBrowser && (
+        <div style={{ width: '100%', height: '520px', maxHeight: '70vh' }}>
+          <OnboardBrowser onClose={() => setShowBrowser(false)} />
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: SP.XS, width: '100%' }}>
         <input
           value={val}
