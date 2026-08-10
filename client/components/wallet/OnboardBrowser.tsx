@@ -1,19 +1,21 @@
 /**
  * OnboardBrowser — the embedded Polymarket browser, rendered inside the wallet tab.
  *
- * This is the point of the whole subsystem: the user sets up Polymarket HERE, never
- * in a separate tab. A real browser runs on the server (so Polymarket sees the
- * server's IP), and its screen is streamed here as JPEG frames over a WebSocket;
- * taps and typing go back the other way. The site cannot be iframed, but its pixels
- * can be drawn to a <canvas>.
+ * A real browser runs on the server (so Polymarket sees the server's IP), and its
+ * screen streams here as JPEG frames over a WebSocket; taps and typing go back.
+ * The site cannot be iframed, but its pixels can be drawn to a <canvas>.
  *
- * Coordinates: frames carry the page's CSS pixel size (w,h, e.g. 390x780). Input
- * events must be in that same CSS space, so pointer positions are mapped from the
- * canvas's on-screen rect back into 0..w / 0..h before sending.
+ * Chrome-free by design: no title bar, no status pills, no visible keyboard field.
+ * Just the page. Typing works because tapping the canvas focuses a hidden input
+ * (which also pops the on-screen keyboard on mobile). The parent owns show/hide.
+ *
+ * Reads only PUBLIC page data (the on-chain proxy address). Never private keys or
+ * seed phrases — with WalletConnect the key is on the user's phone and cannot reach
+ * here anyway, and there is no code path that would try.
  */
 
 import React, { useEffect, useRef, useState } from 'react'
-import { C, D, SP, FS, FW, FONT } from '../../constants/index.js'
+import { C, D, SP, FS, FONT } from '../../constants/index.js'
 
 type Frame = { t: 'frame'; data: string; w: number; h: number }
 type ErrMsg = { t: 'error'; message: string }
@@ -24,14 +26,12 @@ function wsUrl(): string {
   return `${proto}://${location.host}/onboard/ws`
 }
 
-export function OnboardBrowser({ onClose }: { onClose?: () => void }) {
+export function OnboardBrowser() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const kbdRef = useRef<HTMLInputElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
-  // Live frame dimensions (page CSS px) — the input coordinate space.
   const dims = useRef({ w: 390, h: 780 })
-  const [status, setStatus] = useState<'connecting' | 'live' | 'error'>('connecting')
-  const [err, setErr] = useState('')
+  const [err, setErr] = useState('')       // only surfaced on failure; success is silent
 
   useEffect(() => {
     const ws = new WebSocket(wsUrl())
@@ -40,8 +40,6 @@ export function OnboardBrowser({ onClose }: { onClose?: () => void }) {
     let pending: string | null = null
     let drawing = false
 
-    // Decode the latest frame only; if frames arrive faster than we draw, drop the
-    // stale ones rather than queue (keeps latency flat).
     const pump = () => {
       if (drawing || !pending) return
       drawing = true
@@ -58,25 +56,18 @@ export function OnboardBrowser({ onClose }: { onClose?: () => void }) {
       pump()
     }
 
-    ws.onopen = () => setStatus('live')
     ws.onmessage = (e: MessageEvent) => {
       let msg: Incoming
       try { msg = JSON.parse(e.data) } catch { return }
-      if (msg.t === 'frame') {
-        dims.current = { w: msg.w, h: msg.h }
-        pending = msg.data
-        pump()
-      } else if (msg.t === 'error') {
-        setErr(msg.message); setStatus('error')
-      }
+      if (msg.t === 'frame') { dims.current = { w: msg.w, h: msg.h }; pending = msg.data; pump() }
+      else if (msg.t === 'error') setErr(msg.message)
     }
-    ws.onerror = () => { setStatus('error'); setErr('connection failed') }
-    ws.onclose = () => { if (wsRef.current === ws) setStatus('error') }
+    ws.onerror = () => setErr('lost connection to the browser')
+    ws.onclose = () => { if (wsRef.current === ws) setErr('lost connection to the browser') }
 
     return () => { try { ws.close() } catch { /* */ } wsRef.current = null }
   }, [])
 
-  // Map an on-screen pointer to page CSS coordinates.
   const toPage = (clientX: number, clientY: number): { x: number; y: number } => {
     const cv = canvasRef.current
     if (!cv) return { x: 0, y: 0 }
@@ -88,26 +79,18 @@ export function OnboardBrowser({ onClose }: { onClose?: () => void }) {
       y: Math.max(0, Math.min(dims.current.h, fy * dims.current.h)),
     }
   }
-
   const send = (obj: unknown): void => {
     const ws = wsRef.current
     if (ws && ws.readyState === ws.OPEN) { try { ws.send(JSON.stringify(obj)) } catch { /* */ } }
   }
-
   const onPointer = (type: 'move' | 'down' | 'up') => (e: React.PointerEvent) => {
     const { x, y } = toPage(e.clientX, e.clientY)
     send({ t: 'input', ev: { type, x, y } })
-    // Tapping the page should surface the on-screen keyboard so the user can type
-    // into whatever Polymarket field they touched (email, code, amount).
-    if (type === 'up') kbdRef.current?.focus()
+    if (type === 'up') kbdRef.current?.focus()   // pop the keyboard for whatever field was tapped
   }
-
-  // Keystroke forwarder. The hidden input captures the mobile/desktop keyboard;
-  // printable text goes as insertText, named keys (Enter, Backspace) as key events.
   const onKbd = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' || e.key === 'Backspace' || e.key === 'Tab' || e.key.startsWith('Arrow')) {
-      e.preventDefault()
-      send({ t: 'input', ev: { type: 'key', key: e.key } })
+      e.preventDefault(); send({ t: 'input', ev: { type: 'key', key: e.key } })
     }
   }
   const onKbdInput = (e: React.FormEvent<HTMLInputElement>) => {
@@ -116,55 +99,35 @@ export function OnboardBrowser({ onClose }: { onClose?: () => void }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: SP.SM, width: '100%', height: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: SP.SM }}>
-        <span style={{ fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, color: 'var(--tc-dim2)', flex: 1 }}>
-          POLYMARKET — set up here, no separate tab
-        </span>
-        <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO,
-                       color: status === 'live' ? C.GREEN : status === 'error' ? C.RED : C.GOLD }}>
-          {status === 'live' ? '● live' : status === 'error' ? '● ' + (err || 'error') : '○ connecting…'}
-        </span>
-        {onClose && (
-          <button onClick={onClose} style={{
-            border: '1px solid var(--tc-border)', background: 'transparent', color: 'var(--tc-dim2)',
-            borderRadius: D.R_SM, fontSize: FS.NANO, fontFamily: FONT.MONO, cursor: 'pointer', padding: `${SP.XXS} ${SP.SM}`,
-          }}>close</button>
-        )}
-      </div>
-
-      <div style={{
-        position: 'relative', flex: 1, minHeight: 0, width: '100%',
-        display: 'flex', justifyContent: 'center', alignItems: 'flex-start',
-        background: '#000', borderRadius: D.R_CARD, overflow: 'hidden', border: '1px solid var(--tc-border)',
-      }}>
-        <canvas
-          ref={canvasRef}
-          onPointerDown={onPointer('down')}
-          onPointerMove={onPointer('move')}
-          onPointerUp={onPointer('up')}
-          style={{
-            height: '100%', width: 'auto', maxWidth: '100%', display: 'block',
-            touchAction: 'none',      // we own the gesture; don't scroll the page
-            objectFit: 'contain',
-          }}
-        />
-      </div>
-
-      {/* Keystroke capture. Kept visible + labelled so it's obvious where to type on
-          desktop; on mobile it also pops the on-screen keyboard when a field is tapped. */}
+    <div style={{
+      position: 'relative', width: '100%', height: '100%',
+      background: '#000', borderRadius: D.R_CARD, overflow: 'hidden', border: '1px solid var(--tc-border)',
+      display: 'flex', justifyContent: 'center', alignItems: 'flex-start',
+    }}>
+      <canvas
+        ref={canvasRef}
+        onPointerDown={onPointer('down')}
+        onPointerMove={onPointer('move')}
+        onPointerUp={onPointer('up')}
+        style={{ height: '100%', width: 'auto', maxWidth: '100%', display: 'block', touchAction: 'none' }}
+      />
+      {/* Invisible keyboard capture — focused on tap so the on-screen keyboard opens.
+          pointer-events:none so it never blocks canvas gestures. */}
       <input
         ref={kbdRef}
         onKeyDown={onKbd}
         onInput={onKbdInput}
-        placeholder="type / paste here → goes to the page above"
-        autoCapitalize="off" autoCorrect="off" spellCheck={false}
-        style={{
-          width: '100%', padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
-          border: '1px solid var(--tc-border)', background: 'var(--tc-card-alt)',
-          color: 'var(--tc-text-strong)', fontSize: FS.XS, fontFamily: FONT.MONO, outline: 'none',
-        }}
+        autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-hidden
+        style={{ position: 'absolute', bottom: 0, left: 0, width: 1, height: 1, opacity: 0, pointerEvents: 'none', border: 0, padding: 0 }}
       />
+      {err && (
+        <div style={{
+          position: 'absolute', bottom: SP.MD, left: SP.MD, right: SP.MD,
+          padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
+          background: 'rgba(0,0,0,0.8)', border: `1px solid ${C.RED}`,
+          color: C.RED, fontSize: FS.NANO, fontFamily: FONT.MONO, textAlign: 'center',
+        }}>{err}</div>
+      )}
     </div>
   )
 }

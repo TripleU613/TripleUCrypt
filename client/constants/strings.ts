@@ -180,6 +180,11 @@ export const STR = {
   // so the button reading "Game" was the one that switched to real money.
   // Browser-mode maker address. Prose lives in POLY_FUNDER_TIP (an info hover), not
   // on the page — the panel shows only labels + functional status.
+  POLY_NEED_TITLE:  'To trade you need a funded Polymarket account:',
+  POLY_NEED_1:      'Log in below — phone wallet (scan a QR) or email.',
+  POLY_NEED_2:      'Deposit USDC into it.',
+  POLY_NEED_NOTE:   'No API keys to find — the app derives those itself.',
+  POLY_MANUAL_TOGGLE: 'already have your Polymarket address? enter it',
   POLY_SETUP_OPEN:  'Set up Polymarket here',
   POLY_SETUP_HIDE:  'Hide Polymarket',
   POLY_FUNDER_PLACEHOLDER: 'Polymarket wallet address (0x…)',

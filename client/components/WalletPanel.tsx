@@ -683,56 +683,80 @@ function PolyFunderField({ signer }: { signer: string }) {
   const statusText = !valid ? STR.POLY_FUNDER_BAD : check || ''
   const statusColor = !valid ? C.RED : /Recognised/.test(check) ? C.GREEN : C.GOLD
 
+  const [manual, setManual] = useState(false)
+  const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: SP.MD }
+  const numStyle: React.CSSProperties = {
+    flexShrink: 0, width: '18px', height: '18px', borderRadius: '50%', display: 'inline-flex',
+    alignItems: 'center', justifyContent: 'center', background: C.GREEN_BG, color: C.GREEN,
+    fontSize: FS.NANO, fontWeight: FW.XBOLD, fontFamily: FONT.MONO,
+  }
+  const stepStyle: React.CSSProperties = { fontSize: FS.XS, fontFamily: FONT.MONO, color: 'var(--tc-text-2)', lineHeight: 1.4 }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: SP.SM, width: '100%' }}>
-      {/* Primary action: set up in the embedded browser. No tab, no paste. */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: SP.MD, width: '100%' }}>
+      {/* One clean instruction box. What you need, from where. Nothing else. */}
+      <div style={{
+        display: 'flex', flexDirection: 'column', gap: SP.SM, width: '100%',
+        padding: `${SP.LG} ${SP.LG}`, borderRadius: D.R_CARD,
+        border: '1px solid var(--tc-border)', background: 'var(--tc-card-alt)',
+      }}>
+        <span style={{ fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, color: 'var(--tc-text-strong)' }}>
+          {STR.POLY_NEED_TITLE}
+        </span>
+        <div style={rowStyle}><span style={numStyle}>1</span><span style={stepStyle}>{STR.POLY_NEED_1}</span></div>
+        <div style={rowStyle}><span style={numStyle}>2</span><span style={stepStyle}>{STR.POLY_NEED_2}</span></div>
+        <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: 'var(--tc-dim3)', lineHeight: 1.4 }}>
+          {STR.POLY_NEED_NOTE}
+        </span>
+      </div>
+
+      {/* Primary action: set it all up in the embedded browser. */}
       <button
         onClick={() => setShowBrowser(v => !v)}
         style={{
-          width: '100%', padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
+          width: '100%', padding: `${SP.MD} ${SP.MD}`, borderRadius: D.R_BTN,
           border: `1px solid ${C.GREEN_BORDER}`, background: C.GREEN_BG, color: C.GREEN,
-          fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, cursor: 'pointer',
+          fontSize: FS.SM, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, cursor: 'pointer',
         }}
       >{showBrowser ? STR.POLY_SETUP_HIDE : STR.POLY_SETUP_OPEN}</button>
 
       {showBrowser && (
         <div style={{ width: '100%', height: '520px', maxHeight: '70vh' }}>
-          <OnboardBrowser onClose={() => setShowBrowser(false)} />
+          <OnboardBrowser />
         </div>
       )}
 
-      {/* Manual maker address — collapsed to an icon-labelled row + info hover.
-          Everything that used to be three paragraphs is now in the tooltip. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: SP.XS, width: '100%' }}>
-        <input
-          value={val}
-          onChange={e => { setVal(e.target.value); setSaved(false); setCheck('') }}
-          onBlur={commit}
-          onKeyDown={e => { if (e.key === 'Enter') commit() }}
-          placeholder={STR.POLY_FUNDER_PLACEHOLDER}
-          spellCheck={false}
-          autoComplete="off"
-          style={{
-            flex: 1, minWidth: 0, padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
-            border: `1px solid ${valid ? 'var(--tc-border)' : C.RED}`,
-            background: 'var(--tc-card-alt)', color: 'var(--tc-text-strong)',
-            fontSize: FS.XS, fontFamily: FONT.MONO, outline: 'none',
-          }}
-        />
-        <button
-          onClick={commit}
-          disabled={!valid}
-          title={STR.POLY_FUNDER_SAVE}
-          style={{
+      {/* Manual address entry — hidden by default; only for someone who already has
+          it. The embedded browser is the intended path. */}
+      {!manual ? (
+        <button onClick={() => setManual(true)} style={{
+          alignSelf: 'flex-start', background: 'none', border: 'none', cursor: 'pointer',
+          fontSize: FS.NANO, fontFamily: FONT.MONO, color: 'var(--tc-dim3)', textDecoration: 'underline', padding: 0,
+        }}>{STR.POLY_MANUAL_TOGGLE}</button>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: SP.XS, width: '100%' }}>
+          <input
+            value={val}
+            onChange={e => { setVal(e.target.value); setSaved(false); setCheck('') }}
+            onBlur={commit}
+            onKeyDown={e => { if (e.key === 'Enter') commit() }}
+            placeholder={STR.POLY_FUNDER_PLACEHOLDER}
+            spellCheck={false} autoComplete="off"
+            style={{
+              flex: 1, minWidth: 0, padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
+              border: `1px solid ${valid ? 'var(--tc-border)' : C.RED}`,
+              background: 'var(--tc-card-alt)', color: 'var(--tc-text-strong)',
+              fontSize: FS.XS, fontFamily: FONT.MONO, outline: 'none',
+            }}
+          />
+          <button onClick={commit} disabled={!valid} title={STR.POLY_FUNDER_SAVE} style={{
             flexShrink: 0, padding: `${SP.SM} ${SP.LG}`, borderRadius: D.R_BTN,
             border: `1px solid ${valid ? C.GREEN_BORDER : 'var(--tc-border)'}`,
             background: 'transparent', color: valid ? C.GREEN : C.DIM3,
-            fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO,
-            cursor: valid ? 'pointer' : 'default',
-          }}
-        >{saved ? STR.POLY_FUNDER_SAVED : STR.POLY_FUNDER_SAVE}</button>
-        <InfoTip text={STR.POLY_FUNDER_TIP} />
-      </div>
+            fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, cursor: valid ? 'pointer' : 'default',
+          }}>{saved ? STR.POLY_FUNDER_SAVED : STR.POLY_FUNDER_SAVE}</button>
+        </div>
+      )}
 
       {statusText && (
         <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: statusColor, lineHeight: 1.4 }}>
