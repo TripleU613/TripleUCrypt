@@ -17,8 +17,23 @@ REPO_SSH="git@github.com:TripleU613/TripleUCrypt.git"
 
 log() { echo "== $*"; }
 
+# A freshly-booted cloud image runs its own apt (cloud-init / unattended-upgrades)
+# for the first minute or two. Racing it dies with "Could not get lock", so wait
+# for the locks to clear instead of exploding on a brand-new box.
+wait_for_apt() {
+  local waited=0
+  while fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock \
+              /var/lib/dpkg/lock >/dev/null 2>&1; do
+    [ "$waited" -ge 300 ] && { echo "!! apt still locked after 300s" >&2; return 1; }
+    [ "$waited" = 0 ] && echo "   waiting for boot-time apt to finish..."
+    sleep 5; waited=$((waited + 5))
+  done
+  return 0
+}
+
 log "base packages"
 export DEBIAN_FRONTEND=noninteractive
+wait_for_apt
 apt-get update -qq
 apt-get install -y -qq ca-certificates curl gnupg git ufw unattended-upgrades jq >/dev/null
 
@@ -42,6 +57,7 @@ if ! command -v docker >/dev/null 2>&1; then
   CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
   echo "deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $CODENAME stable" \
     > /etc/apt/sources.list.d/docker.list
+  wait_for_apt
   apt-get update -qq
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
 fi
@@ -79,6 +95,7 @@ CONF
 sshd -t && { systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true; }
 
 log "fail2ban (port 22 is reachable from the internet, so ban brute-forcers)"
+wait_for_apt
 apt-get install -y -qq fail2ban >/dev/null
 cat > /etc/fail2ban/jail.d/sshd.local <<'CONF'
 [sshd]
@@ -105,7 +122,7 @@ systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
 log "repo deploy key (private half stays on this box)"
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
 if [ ! -f /root/.ssh/tuc_deploy ]; then
-  ssh-keygen -t ed25519 -f /root/.ssh/tuc_deploy -N "" -C "tripleucrypt-tor1-deploy" -q
+  ssh-keygen -t ed25519 -f /root/.ssh/tuc_deploy -N "" -C "tripleucrypt-$(hostname)-deploy" -q
 fi
 chmod 600 /root/.ssh/tuc_deploy
 touch /root/.ssh/known_hosts
@@ -136,8 +153,12 @@ services:
       # ownership so the non-root "tripleu" user in the container can write.
       # A root-owned host bind mount could not.
       - tuc_data:/app/data
-    expose:
-      - "8200"
+    ports:
+      # Loopback ONLY -- not reachable from the internet (ufw denies inbound too).
+      # cloudflared reaches it at localhost:8200 via network_mode: host below,
+      # which matches the ingress the retired native install used, so moving
+      # hosts needs no Cloudflare-side reconfiguration.
+      - "127.0.0.1:8200:8200"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8200/health"]
       interval: 30s
@@ -150,6 +171,7 @@ services:
     container_name: tripleucrypt-tunnel
     restart: unless-stopped
     command: tunnel --no-autoupdate run
+    network_mode: host
     env_file:
       - path: /opt/tripleucrypt/tunnel.env
         required: true
