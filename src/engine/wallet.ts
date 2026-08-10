@@ -108,12 +108,34 @@ export function closeWallet(): void {
 }
 
 export function setSignMode(mode: string): void {
+  const changed = state.sign_mode !== mode
   patch('sign_mode', mode)
   // Switching to Browser signing makes live mode tradeable with no server key —
   // but `trading_configured` used to wait for the 5s scoreboard loop to notice,
   // so the trade buttons stayed dead for up to five seconds immediately after
   // the user did the correct thing. Settle it on the spot instead.
   if (!state.practice) patch('trading_configured', liveSignerReady())
+
+  // Server and Browser are DIFFERENT accounts — a generated/.env wallet vs. the
+  // connected wallet's Polymarket proxy — with different balances and positions.
+  // The display fields (stat_*, positions) are shared, and the inactive mode's
+  // refresh is gated off, so on a switch the PREVIOUS account's money would sit on
+  // screen until the new account refreshed (or forever, if the new mode isn't set
+  // up). Wipe the money view immediately so it can never show the wrong account's
+  // funds, then let the active mode's refresh repopulate.
+  if (changed) {
+    patch('stats_fresh', false)
+    patch('stat_cash', 0); patch('stat_spendable', 0)
+    patch('stat_wallet', 0); patch('stat_has_wallet', false)
+    patch('positions', [])
+    // Server mode: its refresh is gated off during wallet mode, so kick it now
+    // rather than wait for the 5s loop. Browser mode: the client re-runs
+    // refreshBrowserPortfolio off the sign_mode change (see App.tsx).
+    if (mode !== 'wallet' && !state.practice) {
+      void import('./trading.js').then(m => m.runRefreshBalance?.()).catch(() => {})
+      void import('./positions.js').then(m => m.runRefreshPositions?.()).catch(() => {})
+    }
+  }
 }
 
 export function toggleSignMode(): void {
