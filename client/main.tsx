@@ -1,7 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { injectTheme } from './theme.js'
-injectTheme()
+// Real stylesheet (Vite emits a <link> for this) -- loads in parallel with this
+// bundle instead of being injected as a <style> only after it executes.
+import './theme.css'
 import { App } from './App.js'
 import { connectSSE } from './sse-client.js'
 

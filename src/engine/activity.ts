@@ -11,7 +11,7 @@
  * Polymarket right now" log, unlike state.mkt_trades which is scoped to the
  * viewed market. Both are fed from the same RTDS messages (see social.ts).
  */
-import { state, patch } from './state.js'
+import { state, patch, patchPrepend } from './state.js'
 import type { AppState } from './state.js'
 import { bus } from '../bus.js'
 
@@ -92,7 +92,8 @@ function flush(): void {
   // Newest first: the buffer is oldest-first, so reverse this batch onto the head.
   const batch = _buf.reverse()
   _buf = []
-  patch('activity', [...batch, ...(state.activity ?? [])].slice(0, ACTIVITY_MAX))
+  // Only the new rows go on the wire; patchPrepend keeps the capped list in state.
+  patchPrepend('activity', batch, ACTIVITY_MAX)
 }
 
 // ── RTDS frame ingestion ──────────────────────────────────────────────────────

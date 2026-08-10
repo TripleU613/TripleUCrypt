@@ -1,4 +1,4 @@
-import { state, patch, sleep } from './state.js'
+import { state, patch, sleep, patchMap } from './state.js'
 import type { AppState } from './state.js'
 import { fastSleep, tickSleep } from './performance.js'
 import { bus } from '../bus.js'
@@ -324,10 +324,10 @@ export async function runStreamPolymarket(signal: AbortSignal): Promise<void> {
             if (changed) {
               // Engine_014: only patch indexes when values changed by > 0.05 cents
               if (_indexChanged(state.token_asks ?? {}, newAsks)) {
-                patch('token_asks', newAsks)
+                patchMap('token_asks', newAsks)
               }
               if (_indexChanged(state.token_bids ?? {}, newBids)) {
-                patch('token_bids', newBids)
+                patchMap('token_bids', newBids)
               }
               _updateActivePrices()
             }
@@ -520,8 +520,8 @@ async function _refreshWindows(): Promise<void> {
       if (w.dn_token) { newAsks[w.dn_token] = w.dn_ask; newBids[w.dn_token] = 100 - w.dn_ask }
     }
     // Engine_014: gate seed asks/bids on _indexChanged
-    if (_indexChanged(state.token_asks ?? {}, newAsks)) patch('token_asks', newAsks)
-    if (_indexChanged(state.token_bids ?? {}, newBids)) patch('token_bids', newBids)
+    if (_indexChanged(state.token_asks ?? {}, newAsks)) patchMap('token_asks', newAsks)
+    if (_indexChanged(state.token_bids ?? {}, newBids)) patchMap('token_bids', newBids)
   } catch {
     patch('feed_degraded', true)
   }

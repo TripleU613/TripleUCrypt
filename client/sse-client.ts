@@ -81,6 +81,46 @@ export function connectSSE(): () => void {
       }
     })
 
+    // ── Delta events (see patchMap/patchPrepend in src/engine/state.ts) ──────
+    // The server used to ship whole collections; token_asks/token_bids plus
+    // mkt_trades/activity were 93.6% of all stream bytes. These apply the delta
+    // locally. A dropped delta self-heals: every (re)connect replays a full
+    // snapshot, which is authoritative.
+
+    src.addEventListener('merge', (e: MessageEvent) => {
+      markRx()
+      try {
+        const { k, set, del } = JSON.parse(e.data) as {
+          k: string; set: Record<string, number>; del: string[]
+        }
+        if (!k) return
+        const store = useStore.getState()
+        const cur = { ...((store as unknown as Record<string, unknown>)[k] as Record<string, number> ?? {}) }
+        if (Array.isArray(del)) for (const d of del) delete cur[d]
+        Object.assign(cur, set ?? {})
+        store._patch({ [k]: cur } as never)
+      } catch {
+        // ignore malformed merge
+      }
+    })
+
+    src.addEventListener('prepend', (e: MessageEvent) => {
+      markRx()
+      try {
+        const { k, items, cap } = JSON.parse(e.data) as {
+          k: string; items: unknown[]; cap: number
+        }
+        if (!k || !Array.isArray(items) || items.length === 0) return
+        const store = useStore.getState()
+        const cur = ((store as unknown as Record<string, unknown>)[k] as unknown[]) ?? []
+        // Trim with the server's own cap so both sides hold the same window.
+        const next = cap > 0 ? [...items, ...cur].slice(0, cap) : [...items, ...cur]
+        store._patch({ [k]: next } as never)
+      } catch {
+        // ignore malformed prepend
+      }
+    })
+
     src.addEventListener('notify', (e: MessageEvent) => {
       markRx()
       try {

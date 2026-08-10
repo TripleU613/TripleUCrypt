@@ -91,6 +91,33 @@ export function broadcastPatch(key: string, value: unknown): void {
   }
 }
 
+// ── Broadcast delta patches ───────────────────────────────────────────────────
+// See the patchMap/patchPrepend notes in src/engine/state.ts. Separate event names
+// (rather than an envelope inside `patch`) keep the wire readable in DevTools and
+// let the client apply each with the right merge semantics.
+
+function _writeAll(msg: string): void {
+  for (const res of _clients) {
+    try {
+      res.write(msg)
+    } catch {
+      _cleanup(res)
+    }
+  }
+}
+
+/** Changed map entries (`set`) plus removed keys (`del`). */
+export function broadcastMerge(key: string, set: Record<string, number>, del: string[]): void {
+  if (_clients.size === 0) return
+  _writeAll(`event: merge\ndata: ${JSON.stringify({ k: key, set, del })}\n\n`)
+}
+
+/** New rows for a capped newest-first list; `cap` so the client trims the same. */
+export function broadcastPrepend(key: string, items: readonly unknown[], cap: number): void {
+  if (_clients.size === 0) return
+  _writeAll(`event: prepend\ndata: ${JSON.stringify({ k: key, items, cap })}\n\n`)
+}
+
 // ── Broadcast a notification to all connected clients ─────────────────────────
 
 export function broadcastNotify(payload: { id: number; level: string; text: string }): void {
@@ -107,6 +134,8 @@ export function broadcastNotify(payload: { id: number; level: string; text: stri
 
 // Wire up bus listeners once at module load
 bus.on('patch', broadcastPatch)
+bus.on('merge', broadcastMerge)
+bus.on('prepend', broadcastPrepend)
 bus.on('notify', broadcastNotify)
 
 export function getClientCount(): number {

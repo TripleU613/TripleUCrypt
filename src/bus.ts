@@ -9,6 +9,17 @@ import { EventEmitter } from "node:events";
 interface BusEvents {
   /** A state key changed. */
   patch: [key: string, value: unknown];
+  /**
+   * A map-valued state key changed PARTIALLY: only `set` entries changed and only
+   * `del` keys disappeared. Emitted by patchMap() instead of `patch` so the wire
+   * carries the delta rather than the whole collection (see src/engine/state.ts).
+   */
+  merge: [key: string, set: Record<string, number>, del: string[]];
+  /**
+   * Rows were prepended to a capped newest-first list. `cap` travels with the
+   * delta so the client trims identically. Emitted by patchPrepend().
+   */
+  prepend: [key: string, items: readonly unknown[], cap: number];
   /** CLOB price tick for a token. */
   price_buf: [tokenId: string, isUp: boolean, ask: number, bid: number];
   /** CLOB full order-book snapshot for a token. */

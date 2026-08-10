@@ -1,4 +1,4 @@
-import { state, patch, sleep } from './state.js'
+import { state, patch, sleep, patchPrepend } from './state.js'
 import type { AppState } from './state.js'
 import { pollSleep } from './performance.js'
 import { bus } from '../bus.js'
@@ -164,9 +164,10 @@ export async function runStreamSocial(signal: AbortSignal): Promise<void> {
 
               bus.emit('rtds_trade', trade)
 
-              const current = state.mkt_trades ?? []
-              const updated = [trade, ...current].slice(0, state.feed_limit ?? 20)
-              patch('mkt_trades', updated)
+              // Ship only the new row: this was re-sending the whole capped list
+              // (~6.6 kB) to add one ~345 B trade. patchPrepend keeps the full list
+              // in state for the connect snapshot.
+              patchPrepend('mkt_trades', [trade], state.feed_limit ?? 20)
             } catch {
               // parse error
             }

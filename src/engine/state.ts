@@ -188,6 +188,51 @@ export function patch<K extends keyof AppState>(key: K, value: AppState[K]): voi
   bus.emit('patch', key, value)
 }
 
+// ── Delta patches ─────────────────────────────────────────────────────────────
+//
+// patch() ships the WHOLE value and only dedupes on `===`, so a freshly built
+// collection never matches and the entire thing goes out. Measured on the real
+// stream, three keys were 93.6% of all bytes: token_asks/token_bids re-sent all 64
+// entries (~5.3 kB) whenever a single token moved 0.05c, and mkt_trades/activity
+// re-sent the whole capped list to add one row.
+//
+// These two helpers keep the FULL value in `state` (so the connect snapshot stays
+// authoritative and complete) while putting only the delta on the wire. A dropped
+// delta self-heals: every (re)connect replays a full snapshot.
+
+/**
+ * Map-valued key: store `next` whole, broadcast only entries that changed plus the
+ * keys that disappeared. Call sites keep passing a complete map.
+ */
+export function patchMap<K extends keyof AppState>(key: K, next: Record<string, number>): void {
+  const prev = (state[key] ?? {}) as Record<string, number>
+  const set: Record<string, number> = {}
+  let changed = 0
+  for (const k in next) {
+    if (prev[k] !== next[k]) { set[k] = next[k]; changed++ }
+  }
+  const del: string[] = []
+  for (const k in prev) {
+    if (!(k in next)) del.push(k)
+  }
+  state[key] = next as AppState[K]
+  if (changed === 0 && del.length === 0) return
+  bus.emit('merge', key, set, del)
+}
+
+/**
+ * Capped newest-first list: prepend `items`, broadcast only the new rows. The cap
+ * travels with the delta so the client trims identically to the server.
+ */
+export function patchPrepend<K extends keyof AppState>(
+  key: K, items: readonly unknown[], cap: number,
+): void {
+  if (items.length === 0) return
+  const prev = (state[key] ?? []) as unknown[]
+  state[key] = [...items, ...prev].slice(0, cap) as AppState[K]
+  bus.emit('prepend', key, items, cap)
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
 }
