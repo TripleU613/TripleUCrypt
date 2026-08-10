@@ -731,6 +731,9 @@ function PolyFunderField({ signer, server = false }: { signer: string; server?: 
         </div>
         <div style={rowStyle}><span style={numStyle}>1</span><span style={stepStyle}>{STR.POLY_NEED_1}</span></div>
         <div style={rowStyle}><span style={numStyle}>2</span><span style={stepStyle}>{STR.POLY_NEED_2}</span></div>
+        <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: C.GOLD, lineHeight: 1.4 }}>
+          {STR.POLY_NEED_NOGOOGLE}
+        </span>
         <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: 'var(--tc-dim3)', lineHeight: 1.4 }}>
           {STR.POLY_NEED_NOTE}
         </span>

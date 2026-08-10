@@ -181,8 +181,14 @@ export const STR = {
   // Browser-mode maker address. Prose lives in POLY_FUNDER_TIP (an info hover), not
   // on the page — the panel shows only labels + functional status.
   POLY_NEED_TITLE:  'To trade you need a funded Polymarket account:',
-  POLY_NEED_1:      'Log in below — phone wallet (scan a QR) or email.',
+  POLY_NEED_1:      'Log in below with EMAIL, or scan the QR with a phone wallet.',
   POLY_NEED_2:      'Deposit USDC into it.',
+  // Google deliberately refuses sign-in from automated/embedded browsers, and this is
+  // one: the page runs on the server. Say so up front instead of letting people bounce
+  // off "Couldn't sign you in". It is also the right outcome — a Google password typed
+  // here would travel through the server as keystrokes, which is exactly what Google's
+  // block exists to prevent. Email codes are single-use and wallet keys stay on-device.
+  POLY_NEED_NOGOOGLE: 'Google sign-in does not work here (Google blocks server browsers) — use email or a wallet.',
   POLY_NEED_NOTE:   'No API keys to find — the app derives those itself.',
   POLY_MANUAL_TOGGLE: 'already have your Polymarket address? enter it',
   POLY_SETUP_OPEN:  'Set up Polymarket here',
