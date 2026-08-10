@@ -148,6 +148,7 @@ export async function loadSettings(): Promise<void> {
   if (s.swap_from) patch('swap_from', s.swap_from)
   if (s.swap_to) patch('swap_to', s.swap_to)
   if (s.last_wallet) patch('last_wallet', s.last_wallet)
+  if (s.poly_proxy) patch('server_proxy', s.poly_proxy)
   patch('chart_rev', (state.chart_rev ?? 0) + 1)
 }
 

@@ -431,6 +431,22 @@ export const actions: Record<string, (args: unknown[]) => Promise<void>> = {
     wallet.setSignMode(String(mode ?? 'instant'))
     chart.saveSettings()
   },
+  // The SERVER wallet's Polymarket proxy (maker) address. Server mode signs against
+  // this (type 2) instead of the un-tradeable bare EOA. Reset the CLOB client so the
+  // change takes effect on the next order, not after a restart.
+  set_server_proxy: async ([addr]: unknown[]) => {
+    const v = String(addr ?? '').trim()
+    if (v && !/^0x[0-9a-fA-F]{40}$/.test(v)) { patch('status', 'Invalid proxy address'); patch('status_ok', false); return }
+    const { setPolyProxy } = await import('../io/settings.js')
+    setPolyProxy(v)
+    patch('server_proxy', v)
+    const { resetLiveClient } = await import('../banking/live.js')
+    resetLiveClient()
+    // The server wallet's funds live in the proxy now — re-read against it.
+    await Promise.all([trading.runRefreshBalance(), positions.runRefreshPositions()])
+    patch('status', v ? 'Polymarket wallet saved' : 'Polymarket wallet cleared')
+    patch('status_ok', true)
+  },
   toggle_sign_mode: async () => {
     wallet.toggleSignMode()
   },

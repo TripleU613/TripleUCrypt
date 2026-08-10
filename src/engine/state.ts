@@ -143,6 +143,7 @@ export interface AppState {
   wallet_history_error: string
   local_wallet_addr: string
   has_local_wallet: boolean
+  server_proxy: string       // Polymarket proxy (maker) for the SERVER wallet
   wallet_setup_busy: boolean
   wallet_approve_busy: boolean
   wallet_approve_status: string

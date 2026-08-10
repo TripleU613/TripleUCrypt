@@ -489,6 +489,7 @@ function WalletModeSection() {
   const signMode = useStore(s => s.sign_mode)
   const mmAddress = useStore(s => s.mm_address)
   const mmStatus = useStore(s => s.mm_status)
+  const localWalletAddr = useStore(s => s.local_wallet_addr)
   const patch = useStore(s => s._patch)
   const [wallets, setWallets] = useState<WalletInfo[]>(() => listWallets())
 
@@ -627,8 +628,12 @@ function WalletModeSection() {
       )}
       {mmStatus && !mmAddress && <span style={{ fontSize: FS.XXS, fontFamily: FONT.MONO, color: C.DIM3, textAlign: 'center' }}>{mmStatus}</span>}
 
-      {/* Polymarket wallet (Safe proxy) address -- required for browser trading */}
-      {isWallet && mmAddress && <PolyFunderField signer={mmAddress} />}
+      {/* Polymarket wallet (Safe proxy) setup — needed by BOTH modes, stored per mode.
+          Browser: the connected wallet's proxy (client-side). Server: the generated
+          wallet's proxy (server-side). Same embedded-browser onboarding either way. */}
+      {isWallet
+        ? (mmAddress && <PolyFunderField signer={mmAddress} />)
+        : <PolyFunderField server signer={localWalletAddr} />}
     </Section>
   )
 }
@@ -647,8 +652,12 @@ function WalletModeSection() {
  * Leave it EMPTY to trade as a bare EOA (signature type 0) -- correct only for a
  * wallet that has itself been onboarded and approved on-chain.
  */
-function PolyFunderField({ signer }: { signer: string }) {
-  const [val, setVal] = useState(() => getPolyFunder())
+function PolyFunderField({ signer, server = false }: { signer: string; server?: boolean }) {
+  // The maker/proxy applies to BOTH modes but stores differently: browser signs
+  // client-side (localStorage via getPolyFunder), server signs server-side (a
+  // persisted setting via set_server_proxy). Same field, routed by `server`.
+  const serverProxy = useStore(s => s.server_proxy)
+  const [val, setVal] = useState(() => (server ? serverProxy : getPolyFunder()))
   const [saved, setSaved] = useState(false)
   const valid = val === '' || isAddressLike(val)
   const isEoa = val.trim().toLowerCase() === signer.toLowerCase()
@@ -658,10 +667,16 @@ function PolyFunderField({ signer }: { signer: string }) {
 
   const commit = () => {
     if (!valid) return
-    setPolyFunder(val.trim())
-    resetClobCaches()   // maker changed: drop the cached client + derived L2 creds
     setSaved(true)
     setTimeout(() => setSaved(false), 1500)
+    if (server) {
+      // Server signs server-side; persist there and let the server re-read balances.
+      call('set_server_proxy', val.trim()).catch(() => {})
+      setCheck(val.trim() ? 'Saved — server will trade as this Polymarket wallet' : '')
+      return
+    }
+    setPolyFunder(val.trim())
+    resetClobCaches()   // maker changed: drop the cached client + derived L2 creds
     // Balances/positions are read from the maker, so re-read for the new account.
     refreshBrowserPortfolio(signer).catch(() => {})
     // Ask the CLOB whether it actually recognises this maker. Catching a wrong or

@@ -37,6 +37,27 @@ export type SettingsShape = {
   swap_from?: string
   swap_to?: string
   last_wallet?: string     // last connected browser-wallet address (hint only)
+  // Polymarket proxy (maker) address for the SERVER wallet. The generated EOA is
+  // NOT itself a valid maker (Polymarket rejects a bare EOA — "maker address not
+  // allowed"); once it is onboarded on Polymarket it owns a Safe proxy, and orders
+  // must be signed against THAT (signature_type 2), the same as the browser path.
+  // Persisted here so it survives restarts. Empty → sign as the bare EOA (type 0),
+  // which does not trade — kept only as the pre-onboarding default.
+  poly_proxy?: string
+}
+
+/** The server wallet's Polymarket proxy (maker) address, or '' if not set. */
+export function getPolyProxy(): string {
+  return (loadSettings().poly_proxy ?? '').trim()
+}
+
+/** Persist the server wallet's proxy address ('' clears it). */
+export function setPolyProxy(addr: string): void {
+  const s = loadSettings()
+  const v = addr.trim()
+  if (v) s.poly_proxy = v
+  else delete s.poly_proxy
+  saveSettings(s)
 }
 
 export function loadSettings(): SettingsShape {

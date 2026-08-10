@@ -151,6 +151,7 @@ export interface AppState {
   wallet_error: string
   wallet_history_error: string
   local_wallet_addr: string
+  server_proxy: string
   has_local_wallet: boolean
   wallet_setup_busy: boolean
   wallet_approve_busy: boolean
@@ -379,6 +380,7 @@ export const useStore = create<Store>((set) => ({
   wallet_error: '',
   wallet_history_error: '',
   local_wallet_addr: '',
+  server_proxy: '',
   has_local_wallet: false,
   wallet_setup_busy: false,
   wallet_approve_busy: false,

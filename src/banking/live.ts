@@ -98,11 +98,18 @@ function _keySource(): KeySource | null {
     const d = JSON.parse(raw) as { private_key?: string };
     const pk = d.private_key ?? "";
     if (!pk) return null;
+    // Once the generated wallet is onboarded on Polymarket it owns a Safe proxy,
+    // and orders must be signed against THAT (funder = proxy, signature_type 2) —
+    // exactly like the browser path. A bare EOA (funder = addr, type 0) is not an
+    // accepted maker, so it is only the pre-onboarding fallback.
+    const { getPolyProxy } = require("../io/settings.js") as typeof import("../io/settings.js");
+    const proxy = getPolyProxy();
+    const useProxy = proxy && proxy.toLowerCase() !== addr.toLowerCase();
     return {
       source:         "local",
       private_key:    pk,
-      funder:         addr,
-      signature_type: 0,
+      funder:         useProxy ? proxy : addr,
+      signature_type: useProxy ? 2 : 0,
       address:        addr,
     };
   } catch (e) {
@@ -115,6 +122,16 @@ function _keySource(): KeySource | null {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _clientCache: any = null;
 let _credsReady = false;
+
+/**
+ * Drop the cached ClobClient so the next order rebuilds with a fresh _keySource().
+ * Must be called whenever the maker changes (e.g. the server proxy is set), or the
+ * old funder/signature_type + derived L2 creds would keep being used until restart.
+ */
+export function resetLiveClient(): void {
+  _clientCache = null;
+  _credsReady = false;
+}
 
 // Build the ClobClient with a REAL ethers signer and L2 API creds. clob-client
 // 4.x has NO setApiCreds() — creds are passed to the CONSTRUCTOR — so we build

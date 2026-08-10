@@ -67,6 +67,7 @@ export function initState(s: AppState): void {
   // Reflect any existing on-disk local trading wallet (no decrypt/secret needed).
   const existing = localWalletAddress()
   s.local_wallet_addr = existing
+  s.server_proxy = ''
   s.has_local_wallet = !!existing
   s.deposit_addr = existing
   s.wallet_setup_busy = false
