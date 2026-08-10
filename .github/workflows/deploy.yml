@@ -10,12 +10,19 @@ name: Deploy to server
 # rebuilds, restarts, and waits for /health. See deploy/linux/README.md.
 #
 # The SSH key in DROPLET_SSH_KEY is pinned server-side to a FORCED COMMAND
-# (`command="/usr/local/bin/tuc-deploy"` in the host's authorized_keys), so it
-# cannot open a shell or forward ports even if it leaks. That is why this job
-# just opens a connection and does not pass a command.
+# (`command="sudo /usr/local/bin/tuc-deploy"`), so it cannot open a shell or
+# forward ports even if it leaks. That is why this job just opens a connection
+# and does not pass a command.
+#
+# On GCP that entry lives in ~/.ssh/authorized_keys_ci, NOT authorized_keys:
+# the guest agent syncs authorized_keys from instance metadata and would
+# overwrite a forced-command entry placed there.
 #
 # Secrets used (repo Settings -> Secrets -> Actions):
 #   DROPLET_HOST         host IP / DNS name
+#   DROPLET_SSH_USER     login user (GCP images have no root SSH; a sudo user is
+#                        used instead, with the forced command elevating via a
+#                        single NOPASSWD sudoers entry for tuc-deploy only)
 #   DROPLET_SSH_KEY      private key whose public half is the forced-command entry
 #   DROPLET_KNOWN_HOSTS  ssh-keyscan output, so the host key is pinned not trusted
 #
@@ -86,11 +93,11 @@ jobs:
               -o IdentitiesOnly=yes \
               -o ServerAliveInterval=20 \
               -o ConnectTimeout=15 \
-              root@${{ secrets.DROPLET_HOST }}
+              ${{ secrets.DROPLET_SSH_USER }}@${{ secrets.DROPLET_HOST }}
 
       - name: Report failure
         if: failure()
         run: |
           echo "::error::Deploy failed. The previous container keeps running (restart: unless-stopped)"
           echo "::error::and the previous image is still present, so the app should still be serving."
-          echo "::error::Inspect with: ssh root@<host> 'tuc-status' and 'tuc-logs'"
+          echo "::error::Inspect with: ssh <user>@<host> 'sudo tuc-status' and 'sudo tuc-logs'"
