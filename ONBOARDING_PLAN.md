@@ -41,51 +41,89 @@ drive a **real browser it controls**. That is the only mechanism left.
 **It is NOT for holding a wallet.** Running MetaMask in the server's browser would
 put the private key on the server — precisely what browser ("Wallet") mode exists to
 avoid. That would be *more* attack surface than server mode (a key-holding extension
-**plus** a remote-input surface) for *less* safety. MetaMask is therefore out of this
-flow entirely, which is what allows the lightweight architecture below: no extension
-means no headful browser means no X server.
+**plus** a remote-input surface) for *less* safety.
+
+Dropping the extension does **not** buy a lighter architecture, though — full user
+control does require a headful browser regardless (native popups, OS dialogs,
+clipboard). What replaces the extension is **WalletConnect**: the user scans a QR with
+their phone and signs there, so no key reaches the server. See 3b.
 
 ## 3. Architecture
+
+**REVISED.** An earlier draft chose headless Chromium + CDP screencast on footprint
+grounds. That was correct for a *narrow guided flow* and wrong for the actual
+requirement, which is **the user must fully control the browser, and we do not know
+which login method they will pick.** Headless cannot do native popups (Google
+OAuth), OS file dialogs, or clipboard properly. So: headful browser, whole-desktop
+stream.
 
 ```
 user browser ──HTTPS──▶ Cloudflare Access ──tunnel──▶ Express :8200
                                                         │
-                                                        ├─ GET  /onboard/stream   (JPEG frames, SSE or WS)
-                                                        ├─ POST /onboard/input    (mouse/key -> CDP)
-                                                        └─ chrome-headless-shell via CDP (loopback only)
+                                                        ├─ /remote  → websockify → x11vnc (loopback)
+                                                        └─ Xvfb :99 + headful Chromium (no extensions)
 ```
 
-**CDP screencast, not VNC.** Chosen on measured footprint:
+Streaming the whole X display, not a single page target, is what makes "full control"
+work: every popup, dropdown, native dialog and clipboard action is just pixels and
+input on a real desktop. No per-target window management to hand-write.
 
-| | VNC stack | CDP screencast |
+Cost of the reversal, measured: Xvfb (2.1 MB) + x11vnc (2.1 MB) + websockify (85 KB)
+on disk, full Chromium instead of the headless shell (~450 MB vs ~170 MB), ~300-600 MB
+RAM per page instead of ~150-250 MB, and a framebuffer instead of JPEG deltas.
+
+**Bandwidth mitigations** (a framebuffer would otherwise undo the 36.8x SSE cut):
+- stream **only** while the onboarding tab is open; kill the browser on close
+- modest display (1280x800), 16-bit colour depth
+- `tight` encoding + `-ncache`; noVNC quality/compression turned down
+- this is an **onboarding-only** surface, not a persistent viewport
+
+`chromium` is **not** a real deb on Ubuntu 24.04 (`chromium-browser` is a 103 KB snap
+shim; snap does not work in Docker), so the binary comes from Playwright's download or
+a Playwright base image either way.
+
+**Everything binds loopback.** Browser, X display and VNC are never exposed. Express
+proxies the socket, so **Cloudflare Access already gates the whole remote-input
+surface** — no new auth, no new open port. This is the part where Access is doing real
+load-bearing work.
+
+**Lifecycle:** spawn on demand, kill on tab close, hard idle timeout. Never resident.
+
+## 3b. How the user logs into Polymarket
+
+We do not have to choose — all three of Polymarket's methods work in a headful remote
+browser. Confirmed from their own CSP `frame-src`:
+
+```
+https://*.magic.link            https://*.walletconnect.com
+https://*.google.com            https://*.walletconnect.org
+```
+
+| Method | How it works in the remote browser | Key on the server? |
 |---|---|---|
-| Extra services | Xvfb + x11vnc + websockify | none |
-| Browser | full Chromium, ~450 MB disk | `chrome-headless-shell`, ~170 MB |
-| RAM per page | ~300–600 MB | ~150–250 MB |
-| Wire format | raw framebuffer, always streaming | JPEG deltas, only on change, fps-capped |
-| Input | free (real X input) | hand-mapped (~80 lines) |
+| **WalletConnect** *(recommended)* | Polymarket renders a QR; the user scans it with **any** mobile wallet. Every signature happens on their phone. | **No.** The browser is only a screen. |
+| Email / magic link | Code arrives in the user's email; they type it into the stream. | No wallet involved. |
+| Google OAuth | Opens a **native popup** — the reason headful is required. | No wallet involved. |
 
-The framebuffer is the problem: SSE was just cut 36.8x (68.7 -> 1.87 MB/min) and a
-constant framebuffer would hand that back. Screencast deltas are throttleable.
+**WalletConnect is the answer to "I don't know how they will log in."** It is
+wallet-agnostic (MetaMask mobile, Rainbow, Trust, Coinbase Wallet, ...) and it keeps
+custody on the user's phone, so the server never holds a key even though the browser
+runs there.
 
-Note: `chromium` is **not** a real deb on Ubuntu 24.04 — `chromium-browser` is a
-103 KB snap shim, and snap does not work inside Docker. The binary must come from
-Playwright's own download (or a Playwright base image) regardless of which option is
-chosen.
-
-**Everything binds loopback.** The browser and CDP are never exposed. Express proxies
-them, so **Cloudflare Access already gates the whole surface** — no new auth to
-build, no new port to firewall.
-
-**Lifecycle:** spawn on demand when the onboarding tab opens; kill on close; hard
-idle timeout. Never a permanently resident browser.
+**Installing the MetaMask extension into the server browser is possible and NOT
+recommended.** It would put the private key on the server — the thing this plan
+otherwise avoids. Offer it only as an explicit expert choice, clearly labelled, never
+the default.
 
 ## 4. Phases
 
 ### Phase 1 — the browser exists (~1 day)
 - Add a **separate compose service** for the browser (isolated, resource-capped,
   killable without touching the trading app)
-- `/onboard/stream` + `/onboard/input`, client-side canvas renderer
+- `/remote` websocket -> websockify -> x11vnc; **noVNC** client bundled (no canvas
+  renderer or input mapping to hand-write -- that came free with the reversal)
+- Launch Chromium with `--remote-debugging-port` on **loopback** as well: VNC carries
+  the pixels, CDP stays available for Phase 3's read-back. Both, not either.
 - Spawn/kill lifecycle + idle timeout
 - **Done when:** the wallet tab shows a live, drivable Polymarket page.
 
@@ -98,7 +136,8 @@ idle timeout. Never a permanently resident browser.
 - Cuttable: can start as three lines of static text.
 
 ### Phase 3 — zero-paste credential capture (~1–2 days)  ← the actual prize
-- After onboarding, read the proxy address from the page via CDP `page.evaluate`
+- After onboarding, read the proxy address from the page via **CDP** `page.evaluate`
+  (the debugging port from Phase 1 -- streaming is VNC, read-back is CDP)
 - Validate with the existing `verifyMaker()` (already shipped) — the CLOB confirms
   the maker before anything is stored
 - Write to `/opt/tripleucrypt/secrets.env` server-side; the user never sees a hex
