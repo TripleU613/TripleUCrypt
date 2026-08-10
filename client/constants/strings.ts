@@ -178,6 +178,22 @@ export const STR = {
   TAB_REAL:   'Real',
   // Mobile mode tab names the DESTINATION. The old labels named the current state,
   // so the button reading "Game" was the one that switched to real money.
+  // Browser-mode maker address. Connecting MetaMask to Polymarket creates a Safe
+  // proxy that holds the collateral; that proxy, not the EOA, is the allowed maker.
+  POLY_FUNDER_LABEL: 'POLYMARKET WALLET (MAKER)',
+  POLY_FUNDER_SAVE:  'Save',
+  POLY_FUNDER_SAVED: 'Saved',
+  POLY_FUNDER_OK:    'Trading as your Polymarket wallet (Safe proxy).',
+  POLY_FUNDER_BAD:   'Not a valid 0x address.',
+  POLY_FUNDER_IS_EOA:
+    'Same as your connected wallet — that trades as a bare EOA, which Polymarket '
+    + 'rejects unless the wallet itself was onboarded. Use the proxy address from '
+    + 'Polymarket → Deposit.',
+  POLY_FUNDER_HINT:
+    'Empty = trade as your connected wallet. If Polymarket says "maker address not '
+    + 'allowed, use the deposit market flow", paste the address from Polymarket → '
+    + 'Deposit here.',
+
   TAB_GO_REAL: 'Go Real',
   TAB_GO_GAME: 'Go Game',
   CONFIRM_GO_REAL:

@@ -7,6 +7,8 @@ import { playFx } from '../lib/fx.js'
 import { connectMetaMask, listWallets, subscribeWallets, onAddressChange, getWalletBalances, ensurePolygon,
   sendNativePol, sendErc20, sendTransaction, approveErc20, activeWalletId, forgetWallet, USDC_NATIVE, USDC_E } from '../buses/MetaMaskBus.js'
 import { refreshBrowserPortfolio, resetClobCaches, warmClob } from '../buses/clobLazy.js'
+// localStorage-only module: safe to import eagerly (ClobTrade's web3 deps stay lazy).
+import { getPolyFunder, setPolyFunder, isAddressLike } from '../lib/polyFunder.js'
 
 // Browser-mode swap: server builds the 0x quote (API key is server-side), the
 // connected wallet approves (if needed) + signs the swap tx. Returns true on success.
@@ -623,7 +625,80 @@ function WalletModeSection() {
         </div>
       )}
       {mmStatus && !mmAddress && <span style={{ fontSize: FS.XXS, fontFamily: FONT.MONO, color: C.DIM3, textAlign: 'center' }}>{mmStatus}</span>}
+
+      {/* Polymarket wallet (Safe proxy) address -- required for browser trading */}
+      {isWallet && mmAddress && <PolyFunderField signer={mmAddress} />}
     </Section>
+  )
+}
+
+
+/**
+ * The Polymarket wallet (Gnosis Safe proxy) address to trade as.
+ *
+ * When you connect MetaMask to Polymarket, it creates a Safe PROXY that holds your
+ * collateral; that proxy -- not your EOA -- is the allowed maker. Signing as the
+ * bare EOA gets the order rejected with "maker address not allowed. please use the
+ * deposit market flow". There is no public endpoint that resolves an EOA to its
+ * proxy (the server path takes POLY_WALLET_ADDRESS as config for the same reason),
+ * so it is entered here and kept in localStorage per browser.
+ *
+ * Leave it EMPTY to trade as a bare EOA (signature type 0) -- correct only for a
+ * wallet that has itself been onboarded and approved on-chain.
+ */
+function PolyFunderField({ signer }: { signer: string }) {
+  const [val, setVal] = useState(() => getPolyFunder())
+  const [saved, setSaved] = useState(false)
+  const valid = val === '' || isAddressLike(val)
+  const isEoa = val.trim().toLowerCase() === signer.toLowerCase()
+
+  const commit = () => {
+    if (!valid) return
+    setPolyFunder(val.trim())
+    resetClobCaches()   // maker changed: drop the cached client + derived L2 creds
+    setSaved(true)
+    setTimeout(() => setSaved(false), 1500)
+    // Balances/positions are read from the maker, so re-read for the new account.
+    refreshBrowserPortfolio(signer).catch(() => {})
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: SP.XS, width: '100%' }}>
+      <span style={{ fontSize: FS.NANO, fontWeight: FW.XBOLD, letterSpacing: '0.06em', color: 'var(--tc-dim2)', fontFamily: FONT.MONO }}>
+        {STR.POLY_FUNDER_LABEL}
+      </span>
+      <div style={{ display: 'flex', gap: SP.XS, width: '100%' }}>
+        <input
+          value={val}
+          onChange={e => { setVal(e.target.value); setSaved(false) }}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') commit() }}
+          placeholder="0x… (Polymarket → Deposit)"
+          spellCheck={false}
+          autoComplete="off"
+          style={{
+            flex: 1, minWidth: 0, padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
+            border: `1px solid ${valid ? 'var(--tc-border)' : C.RED}`,
+            background: 'var(--tc-card-alt)', color: 'var(--tc-text-strong)',
+            fontSize: FS.XS, fontFamily: FONT.MONO, outline: 'none',
+          }}
+        />
+        <button
+          onClick={commit}
+          disabled={!valid}
+          style={{
+            flexShrink: 0, padding: `${SP.SM} ${SP.LG}`, borderRadius: D.R_BTN,
+            border: `1px solid ${valid ? C.GREEN_BORDER : 'var(--tc-border)'}`,
+            background: 'transparent', color: valid ? C.GREEN : C.DIM3,
+            fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO,
+            cursor: valid ? 'pointer' : 'default',
+          }}
+        >{saved ? STR.POLY_FUNDER_SAVED : STR.POLY_FUNDER_SAVE}</button>
+      </div>
+      <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: !valid ? C.RED : isEoa ? C.GOLD : 'var(--tc-dim3)', lineHeight: 1.4 }}>
+        {!valid ? STR.POLY_FUNDER_BAD : isEoa ? STR.POLY_FUNDER_IS_EOA : val ? STR.POLY_FUNDER_OK : STR.POLY_FUNDER_HINT}
+      </span>
+    </div>
   )
 }
 

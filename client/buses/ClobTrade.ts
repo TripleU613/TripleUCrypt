@@ -12,13 +12,47 @@ import { ClobClient, Side, OrderType } from '@polymarket/clob-client-v2'
 import type { ApiKeyCreds } from '@polymarket/clob-client-v2'
 import { getEip1193, approveErc20, setApprovalForAll } from './MetaMaskBus.js'
 import { useStore } from '../store.js'
+import { getPolyFunder } from '../lib/polyFunder.js'
 
 // Route CLOB through our own server (/clob → clob.polymarket.com) so browser
 // requests are same-origin — no CORS / Cloudflare-bot / network-error issues.
 // clob-client signs the relative path (e.g. /order), so the host prefix is safe.
 const CLOB_HOST = (typeof window !== 'undefined' ? window.location.origin : '') + '/clob'
 const CHAIN = 137
+// Polymarket signature types (SignatureTypeV2 in the SDK):
+//   0 EOA               -- the signing EOA is also the maker and holds the funds
+//   2 POLY_GNOSIS_SAFE  -- an EOA signing for the Polymarket Safe proxy it owns
+//
+// Browser mode was hardcoded to 0 with funderAddress = the MetaMask address, which
+// tells the CLOB "this bare EOA is the maker". If you connected MetaMask to
+// Polymarket, your funds live in a Gnosis Safe PROXY it created for you, and that
+// proxy -- not your EOA -- is the allowed maker. The CLOB rejects the EOA with
+// "maker address not allowed. please use the deposit market flow".
 const SIG_TYPE_EOA = 0
+const SIG_TYPE_POLY_GNOSIS_SAFE = 2
+
+
+/**
+ * Which (funder, signatureType) pair to trade with.
+ *
+ * The rule is general and mirrors src/banking/live.ts: if the funder differs from
+ * the signer, the signer is acting FOR a proxy (type 2). If they are the same, the
+ * EOA is its own maker (type 0) -- valid only for an EOA that has itself been
+ * onboarded and approved on-chain, which is the generated-wallet case, not a
+ * freshly connected MetaMask.
+ */
+export function fundingAccount(signerAddr: string): string {
+  const proxy = getPolyFunder()
+  return proxy || signerAddr
+}
+
+function makerFor(signerAddr: string): { funder: string; sigType: number } {
+  const proxy = getPolyFunder()
+  if (proxy && proxy.toLowerCase() !== signerAddr.toLowerCase()) {
+    return { funder: proxy, sigType: SIG_TYPE_POLY_GNOSIS_SAFE }
+  }
+  return { funder: signerAddr, sigType: SIG_TYPE_EOA }
+}
 const CREDS_KEY = 'tc_clob_creds'
 
 // Polygon contract addresses (public; mirror src/banking/models.ts).
@@ -134,6 +168,23 @@ export function parseFill(resp: unknown, side: 'BUY' | 'SELL', usd: number, shar
  * NOT a thrown exception), while createL2Headers / canL2Auth can THROW. We cover
  * both: a 401 status, or a message/error string matching known auth phrasings.
  */
+/**
+ * "maker address not allowed. please use the deposit market flow" means the maker we
+ * signed for is not a registered Polymarket account -- almost always because we
+ * traded as the bare EOA while the user's collateral sits in a Safe proxy. Rewrite
+ * it into the actual remedy; the raw text gives no hint that a proxy address is
+ * what's missing.
+ */
+function friendlyClobError(raw: string): string {
+  if (/maker address not allowed|deposit market flow/i.test(raw)) {
+    return 'Polymarket rejected this wallet as the maker. Your funds are held by a '
+         + 'Polymarket wallet (Safe proxy), not your browser wallet — paste its '
+         + 'address into "Polymarket wallet (maker)" in the Wallet panel. Find it on '
+         + 'Polymarket → Deposit.'
+  }
+  return raw
+}
+
 function isAuthError(x: unknown): boolean {
   if (x == null) return false
   const r = x as Record<string, unknown>
@@ -193,7 +244,7 @@ export async function browserBuy(address: string, tokenId: string, usd: number, 
       return c.postOrder(order, OrderType.FOK)
     })
     return parseFill(resp, 'BUY', usd, 0)
-  } catch (e) { return { ok: false, error: (e as Error)?.message || 'Order failed', shares: 0, price: 0, usd, orderId: '' } }
+  } catch (e) { return { ok: false, error: friendlyClobError((e as Error)?.message || 'Order failed'), shares: 0, price: 0, usd, orderId: '' } }
 }
 
 /**
@@ -206,7 +257,9 @@ export async function browserBuy(address: string, tokenId: string, usd: number, 
  */
 export async function freshHeldSize(address: string, tokenId: string): Promise<{ size: number; resolved: boolean } | null> {
   try {
-    const r = await fetch(`/data-api/positions?user=${address}&sizeThreshold=0`)
+    // Positions belong to the MAKER -- the proxy when one is configured. Querying
+    // the signing EOA would report zero held and refuse the sell.
+    const r = await fetch(`/data-api/positions?user=${fundingAccount(address)}&sizeThreshold=0`)
     const raw = await r.json() as DataApiPosition[] | { data?: DataApiPosition[] }
     const list = Array.isArray(raw) ? raw : (raw.data ?? [])
     const p = list.find(x => (x.asset ?? '') === tokenId)
@@ -231,7 +284,7 @@ export async function browserSell(address: string, tokenId: string, shares: numb
       return c.postOrder(order, OrderType.FAK)
     })
     return parseFill(resp, 'SELL', 0, shares)
-  } catch (e) { return { ok: false, error: (e as Error)?.message || 'Order failed', shares: 0, price: 0, usd: 0, orderId: '' } }
+  } catch (e) { return { ok: false, error: friendlyClobError((e as Error)?.message || 'Order failed'), shares: 0, price: 0, usd: 0, orderId: '' } }
 }
 
 // ── One-time approvals (raw EOA must approve the exchanges before orders fill) ──
@@ -291,6 +344,11 @@ async function isNegRiskToken(address: string, tokenId: string): Promise<boolean
  * aren't approvable the trade is refused (rather than silently reverting after signing).
  */
 export async function ensureBrowserApprovals(address: string, tokenId?: string): Promise<{ ok: boolean; error?: string }> {
+  // Trading through a Polymarket proxy: its allowances were granted by Polymarket's
+  // deposit flow when the proxy was created. Approving here would set allowances on
+  // the EOA's own tokens (which hold nothing) and prompt for nothing useful.
+  const proxy = getPolyFunder()
+  if (proxy && proxy.toLowerCase() !== address.toLowerCase()) return { ok: true }
   if (_approving) return { ok: false, error: 'Approval already in progress' }
   _approving = true
   try {
@@ -408,7 +466,8 @@ export async function refreshBrowserPortfolio(address: string): Promise<void> {
   // Balances — read from a public Polygon RPC (chain-agnostic), not the injected
   // provider (which returns 0 if MetaMask is on a different network).
   try {
-    const b = await readPolygonBalances(address)
+    // Collateral and positions sit with the maker (the proxy when configured).
+    const b = await readPolygonBalances(fundingAccount(address))
     // Drop late/stale responses: only write if still in wallet mode for the same
     // address this poll started for (ignore the result otherwise).
     if (!stillCurrent()) return
@@ -427,7 +486,7 @@ export async function refreshBrowserPortfolio(address: string): Promise<void> {
 
   // Positions — public data-api, no key. Map to the store's position shape.
   try {
-    const r = await fetch(`/data-api/positions?user=${address}&sizeThreshold=0.01`)
+    const r = await fetch(`/data-api/positions?user=${fundingAccount(address)}&sizeThreshold=0.01`)
     const raw = await r.json() as DataApiPosition[] | { data?: DataApiPosition[] }
     const list = Array.isArray(raw) ? raw : (raw.data ?? [])
     const positions = list
