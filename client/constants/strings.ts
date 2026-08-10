@@ -191,7 +191,7 @@ export const STR = {
     + 'Polymarket → Deposit.',
   POLY_FUNDER_HINT:
     'Empty = trade as your connected wallet. If Polymarket says "maker address not '
-    + 'allowed, use the deposit market flow", paste the address from Polymarket → '
+    + 'allowed, use the deposit wallet flow", paste the address from Polymarket → '
     + 'Deposit here.',
 
   TAB_GO_REAL: 'Go Real',

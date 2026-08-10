@@ -169,14 +169,14 @@ export function parseFill(resp: unknown, side: 'BUY' | 'SELL', usd: number, shar
  * both: a 401 status, or a message/error string matching known auth phrasings.
  */
 /**
- * "maker address not allowed. please use the deposit market flow" means the maker we
+ * "maker address not allowed, please use the deposit wallet flow" means the maker we
  * signed for is not a registered Polymarket account -- almost always because we
  * traded as the bare EOA while the user's collateral sits in a Safe proxy. Rewrite
  * it into the actual remedy; the raw text gives no hint that a proxy address is
  * what's missing.
  */
 function friendlyClobError(raw: string): string {
-  if (/maker address not allowed|deposit market flow/i.test(raw)) {
+  if (/maker address not allowed|deposit (wallet|market) flow/i.test(raw)) {
     return 'Polymarket rejected this wallet as the maker. Your funds are held by a '
          + 'Polymarket wallet (Safe proxy), not your browser wallet — paste its '
          + 'address into "Polymarket wallet (maker)" in the Wallet panel. Find it on '
