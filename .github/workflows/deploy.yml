@@ -23,7 +23,8 @@ name: Deploy to server
 # /opt/tripleucrypt/secrets.env on the host (`tuc-secrets`), so a wallet key
 # never passes through GitHub.
 
-permissions: {}   # needs no GitHub token scope; it only opens an SSH connection
+# Least privilege by default; the gate job opts into the one scope it needs.
+permissions: {}
 
 on:
   push:
@@ -44,6 +45,13 @@ jobs:
     name: Test gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # actions/checkout needs this. Without it the workflow-level `permissions: {}`
+    # leaves the token with no scopes and checkout fails "Repository not found"
+    # (GitHub returns 404, not 403, for a private repo it cannot see) -- which
+    # broke every deploy. The deploy job below still gets no token scope: it only
+    # opens an SSH connection.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
