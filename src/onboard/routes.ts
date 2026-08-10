@@ -3,8 +3,10 @@
  *
  * One WebSocket at /onboard/ws:
  *   server → client   { t:'frame', data, w, h }   base64 JPEG screencast frames
+ *                      { t:'url', url, loading }   where the page actually is
  *   client → server   { t:'input', ev }           mouse/key events into the page
- *                      { t:'nav', url }            navigate the page
+ *                      { t:'nav', url }            address bar: URL, host or search
+ *                      { t:'back' | 'forward' | 'reload' }
  *
  * The socket is attached to the app's existing http.Server (no new port) and its path
  * is served through the same origin, so **Cloudflare Access already gates it** — the
@@ -13,7 +15,7 @@
  */
 
 import type { Server } from 'http'
-import { onboardBrowser, type Input } from './browser.js'
+import { onboardBrowser, type Input, type OutEvent } from './browser.js'
 
 const WS_PATH = '/onboard/ws'
 // Drop frames once this much is already queued for the viewer (~2 frames' worth).
@@ -55,16 +57,24 @@ export function attachOnboardWs(server: Server): void {
       // would otherwise pile base64 JPEGs into ws's unbounded send buffer and grow
       // RSS on a 2 GB box. One frame in flight is enough; the newest frame is the
       // only one worth showing anyway.
-      const sink = (f: { data: string; w: number; h: number }): void => {
+      const sink = (e: OutEvent): void => {
         try {
           if (ws.readyState !== ws.OPEN) return
-          if (ws.bufferedAmount > MAX_BUFFERED_BYTES) return
-          ws.send(JSON.stringify({ t: 'frame', ...f }))
+          // Backpressure applies to FRAMES only — dropping an address-bar update would
+          // leave the bar showing the wrong page, and those messages are tiny.
+          if (e.t === 'frame' && ws.bufferedAmount > MAX_BUFFERED_BYTES) return
+          ws.send(JSON.stringify(e))
         } catch { /* viewer gone */ }
       }
 
       onboardBrowser.attach(sink)
-        .then(fn => { if (closed) fn(); else detach = fn })
+        .then(fn => {
+          if (closed) { fn(); return }
+          detach = fn
+          // Tell a fresh viewer where the page already is, so its address bar is
+          // correct before the next navigation happens.
+          sink({ t: 'url', url: onboardBrowser.url, loading: false })
+        })
         .catch(err => {
           try { ws.send(JSON.stringify({ t: 'error', message: String(err instanceof Error ? err.message : err) })) } catch { /* */ }
           try { ws.close() } catch { /* */ }
@@ -75,6 +85,9 @@ export function attachOnboardWs(server: Server): void {
         try { msg = JSON.parse(String(raw)) } catch { return }
         if (msg.t === 'input' && msg.ev) void onboardBrowser.input(msg.ev)
         else if (msg.t === 'nav' && typeof msg.url === 'string') void onboardBrowser.navigate(msg.url)
+        else if (msg.t === 'back') void onboardBrowser.back()
+        else if (msg.t === 'forward') void onboardBrowser.forward()
+        else if (msg.t === 'reload') void onboardBrowser.reload()
       })
 
       ws.on('close', release)

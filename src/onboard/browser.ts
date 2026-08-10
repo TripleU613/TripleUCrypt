@@ -43,23 +43,32 @@ const SCREENCAST = { format: 'jpeg' as const, quality: 60, maxWidth: 780, maxHei
 const IDLE_KILL_MS = 90_000     // no viewer for this long → shut the browser down
 const START_URL = 'https://polymarket.com/'
 
-// Hosts the onboarding browser may be told to navigate to. Polymarket's login can
-// bounce through wallet/auth providers, so those are included; anything else (and
-// any non-https scheme) is refused. Exact host or subdomain match only — never a
-// substring test, which 'polymarket.com.evil.tld' would pass.
-const NAV_ALLOW_HOSTS = [
-  'polymarket.com',
-  'walletconnect.com',
-  'walletconnect.org',
-  'magic.link',
-]
-
-export function isAllowedNavTarget(raw: string): boolean {
-  let u: URL
-  try { u = new URL(raw) } catch { return false }
-  if (u.protocol !== 'https:') return false
-  const h = u.hostname.toLowerCase()
-  return NAV_ALLOW_HOSTS.some(d => h === d || h.endsWith('.' + d))
+/**
+ * Turn whatever was typed in the address bar into something to load — the same
+ * judgement a real browser's omnibox makes.
+ *
+ * This is a FULL browser by design: any http/https destination is allowed, because the
+ * user needs to be able to reach whatever their onboarding actually requires (wallets,
+ * exchanges, email, support pages) without us guessing the list up front.
+ *
+ * Non-web schemes (file:, chrome:, about: beyond blank) are treated as a SEARCH rather
+ * than opened. That is not a browsing restriction — it is what an omnibox does with
+ * input that isn't a web address — and it keeps a typo from turning the server's own
+ * filesystem into a page. Everything reachable over http/https stays reachable.
+ */
+export function resolveNavInput(raw: string): string {
+  const q = String(raw ?? '').trim()
+  if (!q) return 'about:blank'
+  // Already a web URL.
+  if (/^https?:\/\//i.test(q)) {
+    try { new URL(q); return q } catch { /* fall through to search */ }
+  }
+  // Looks like a bare host ("polymarket.com", "app.uniswap.org/swap") → https.
+  if (/^[\w-]+(\.[\w-]+)+(\/[^\s]*)?$/.test(q) && !q.includes(' ')) {
+    return 'https://' + q
+  }
+  // Anything else: search it.
+  return 'https://duckduckgo.com/?q=' + encodeURIComponent(q)
 }
 
 // Where the headless-shell binary lives. Installed on the box by provision.sh; the
@@ -71,11 +80,16 @@ function executablePath(): string | undefined {
 // ── Types the client cares about ──────────────────────────────────────────────
 
 export type Frame = { data: string; w: number; h: number }   // base64 jpeg + css px
+// What the viewer receives. Frames are pixels; 'url' keeps the address bar in sync
+// with wherever the page actually went (in-page links, redirects, logins).
+export type OutEvent =
+  | ({ t: 'frame' } & Frame)
+  | { t: 'url'; url: string; loading: boolean }
 export type MouseInput = { type: 'move' | 'down' | 'up'; x: number; y: number; button?: 'left' | 'right' | 'middle' }
 export type KeyInput = { type: 'key'; text?: string; key?: string; code?: string }
 export type Input = MouseInput | KeyInput
 
-type FrameSink = (f: Frame) => void
+type FrameSink = (e: OutEvent) => void
 
 // ── Controller (single-tenant: one browser per instance) ────────────────────────
 
@@ -154,20 +168,34 @@ class OnboardBrowser {
     cdp.on('Page.screencastFrame', (e: { data: string; sessionId: number; metadata?: { deviceWidth?: number; deviceHeight?: number } }) => {
       // ACK immediately or Chromium stops sending frames.
       cdp.send('Page.screencastFrameAck', { sessionId: e.sessionId }).catch(() => {})
-      const f: Frame = {
+      this.emit({
+        t: 'frame',
         data: e.data,
         w: e.metadata?.deviceWidth ?? VIEWPORT.width,
         h: e.metadata?.deviceHeight ?? VIEWPORT.height,
-      }
-      for (const s of this.sinks) { try { s(f) } catch { /* a bad sink must not kill the stream */ } }
+      })
     })
 
     this.page = page
     this.cdp = cdp
 
+    // Keep the client's address bar honest: report wherever the page actually ends up,
+    // including in-page links, redirects and login bounces we never asked for.
+    page.on('framenavigated', f => {
+      if (f === page.mainFrame()) this.emit({ t: 'url', url: f.url(), loading: false })
+    })
+    page.on('load', () => this.emit({ t: 'url', url: page.url(), loading: false }))
+
     await page.goto(START_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
     await cdp.send('Page.startScreencast', SCREENCAST).catch(() => {})
   }
+
+  private emit(e: OutEvent): void {
+    for (const s of this.sinks) { try { s(e) } catch { /* a bad sink must not kill the stream */ } }
+  }
+
+  /** Current address, for a viewer that just attached. */
+  get url(): string { return this.page?.url() ?? '' }
 
   /** Feed one input event from the client into the page. Never throws. */
   async input(ev: Input): Promise<void> {
@@ -196,26 +224,23 @@ class OnboardBrowser {
   }
 
   /**
-   * Navigate the page (e.g. jump to the deposit screen). Never throws.
-   *
-   * ALLOWLISTED to the onboarding destinations on purpose. The URL arrives from the
-   * client over the WebSocket, and this browser runs server-side with --no-sandbox in
-   * the same container as the trading engine — an unrestricted goto() would render
-   * arbitrary internal targets (cloud metadata at 169.254.169.254, localhost:8200,
-   * file://) straight back to the caller as JPEG frames, i.e. a read-through SSRF.
-   * Single-tenant + Cloudflare Access keeps the blast radius to the box owner, but
-   * this module's contract is Polymarket onboarding, so it enforces exactly that.
-   *
-   * Note this only constrains EXPLICIT navigation requests; in-page links the user
-   * taps are Chromium's own navigation and are not (and need not be) filtered here.
+   * Navigate. Unrestricted by design: this is a general-purpose browser so the user can
+   * reach whatever their setup needs, not a kiosk locked to one site. Input goes through
+   * resolveNavInput so the address bar accepts URLs, bare hosts, or search terms.
    */
-  async navigate(url: string): Promise<void> {
-    if (!isAllowedNavTarget(url)) {
-      console.warn(`[onboard] blocked navigation to ${String(url).slice(0, 120)}`)
-      return
-    }
-    try { await this.page?.goto(url, { waitUntil: 'domcontentloaded' }) } catch { /* ignore */ }
+  async navigate(input: string): Promise<void> {
+    const target = resolveNavInput(input)
+    const p = this.page
+    if (!p) return
+    this.emit({ t: 'url', url: target, loading: true })
+    try { await p.goto(target, { waitUntil: 'domcontentloaded' }) } catch { /* ignore */ }
+    this.emit({ t: 'url', url: p.url(), loading: false })
   }
+
+  /** Browser history / reload, so the embedded view behaves like a real browser. */
+  async back(): Promise<void> { try { await this.page?.goBack({ waitUntil: 'domcontentloaded' }) } catch { /* */ } }
+  async forward(): Promise<void> { try { await this.page?.goForward({ waitUntil: 'domcontentloaded' }) } catch { /* */ } }
+  async reload(): Promise<void> { try { await this.page?.reload({ waitUntil: 'domcontentloaded' }) } catch { /* */ } }
 
   /**
    * Read PUBLIC page data with a caller-supplied DOM function. Used by Phase 2 to

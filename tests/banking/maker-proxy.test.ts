@@ -122,29 +122,33 @@ describe('server-wallet maker selection', () => {
   })
 })
 
-describe('onboarding browser navigation allowlist', () => {
-  it('permits Polymarket and its subdomains over https', async () => {
-    const { isAllowedNavTarget } = await import('../../src/onboard/browser.js')
-    expect(isAllowedNavTarget('https://polymarket.com/')).toBe(true)
-    expect(isAllowedNavTarget('https://polymarket.com/deposit')).toBe(true)
-    expect(isAllowedNavTarget('https://www.polymarket.com/')).toBe(true)
+describe('onboarding browser address bar', () => {
+  // The browser is deliberately UNRESTRICTED (a general-purpose browser, not a kiosk):
+  // any http/https destination is allowed. What is pinned here is omnibox behaviour —
+  // URLs load, bare hosts get https, and anything that isn't a web address becomes a
+  // search instead of being handed to the server's own filesystem.
+  it('passes through explicit http/https URLs', async () => {
+    const { resolveNavInput } = await import('../../src/onboard/browser.js')
+    expect(resolveNavInput('https://polymarket.com/deposit')).toBe('https://polymarket.com/deposit')
+    expect(resolveNavInput('http://example.com/x')).toBe('http://example.com/x')
   })
 
-  it('refuses internal and non-https targets', async () => {
-    // The server browser runs --no-sandbox next to the trading engine and renders
-    // whatever it loads back to the caller as frames, so an unrestricted goto() would
-    // be a read-through SSRF into cloud metadata / localhost / the filesystem.
-    const { isAllowedNavTarget } = await import('../../src/onboard/browser.js')
-    expect(isAllowedNavTarget('http://169.254.169.254/latest/meta-data/')).toBe(false)
-    expect(isAllowedNavTarget('http://localhost:8200/health')).toBe(false)
-    expect(isAllowedNavTarget('file:///etc/passwd')).toBe(false)
-    expect(isAllowedNavTarget('https://127.0.0.1/')).toBe(false)
-    expect(isAllowedNavTarget('not a url')).toBe(false)
+  it('upgrades a bare host to https', async () => {
+    const { resolveNavInput } = await import('../../src/onboard/browser.js')
+    expect(resolveNavInput('polymarket.com')).toBe('https://polymarket.com')
+    expect(resolveNavInput('app.uniswap.org/swap')).toBe('https://app.uniswap.org/swap')
   })
 
-  it('is not fooled by a lookalike host suffix', async () => {
-    const { isAllowedNavTarget } = await import('../../src/onboard/browser.js')
-    expect(isAllowedNavTarget('https://polymarket.com.evil.tld/')).toBe(false)
-    expect(isAllowedNavTarget('https://notpolymarket.com/')).toBe(false)
+  it('searches anything that is not a web address', async () => {
+    const { resolveNavInput } = await import('../../src/onboard/browser.js')
+    expect(resolveNavInput('how to deposit usdc')).toMatch(/^https:\/\/duckduckgo\.com\/\?q=/)
+    // Not a browsing restriction — an omnibox does the same with non-web input, and it
+    // keeps a stray file:/// from turning the server's disk into a page.
+    expect(resolveNavInput('file:///etc/passwd')).toMatch(/^https:\/\/duckduckgo\.com\/\?q=/)
+  })
+
+  it('treats empty input as a blank page', async () => {
+    const { resolveNavInput } = await import('../../src/onboard/browser.js')
+    expect(resolveNavInput('   ')).toBe('about:blank')
   })
 })
