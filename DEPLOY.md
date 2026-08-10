@@ -115,6 +115,22 @@ to `main` by `.github/workflows/deploy.yml`.
 > indefinitely rather than failing, so pushes look successful while production
 > never updates.
 
+### The live host
+
+Currently a **GCP e2-small in `europe-southwest1-a` (Madrid)**, fronted by the
+`tripleucrypt` Cloudflare Tunnel at `crypto.tripleu.org` behind Access.
+
+Two host-platform gotchas worth knowing before you move it again:
+
+- **GCP images have no root SSH.** You get a sudo user, so `provision.sh` runs as
+  `sudo bash provision.sh` and the CI login user is a secret (`DROPLET_SSH_USER`)
+  rather than a hardcoded `root@`.
+- **On GCP the CI forced-command entry must NOT live in `~/.ssh/authorized_keys`.**
+  The google guest agent syncs that file from instance metadata and will overwrite
+  it, silently dropping the restriction (the deploy keeps working, but the key
+  quietly regains full shell access). It goes in `~/.ssh/authorized_keys_ci`,
+  added to sshd's `AuthorizedKeysFile` list -- a file the agent does not manage.
+
 ### One-time: the host
 
 Any Ubuntu 24.04 VPS. `deploy/linux/provision.sh` does the whole setup —
