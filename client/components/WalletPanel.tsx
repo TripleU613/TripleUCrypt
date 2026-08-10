@@ -6,7 +6,7 @@ import { C, FONT, D, SP, SZ, FS, FW, STR } from '../constants/index.js'
 import { playFx } from '../lib/fx.js'
 import { connectMetaMask, listWallets, subscribeWallets, onAddressChange, getWalletBalances, ensurePolygon,
   sendNativePol, sendErc20, sendTransaction, approveErc20, activeWalletId, forgetWallet, USDC_NATIVE, USDC_E } from '../buses/MetaMaskBus.js'
-import { refreshBrowserPortfolio, resetClobCaches, warmClob } from '../buses/clobLazy.js'
+import { refreshBrowserPortfolio, resetClobCaches, warmClob, verifyMaker } from '../buses/clobLazy.js'
 // localStorage-only module: safe to import eagerly (ClobTrade's web3 deps stay lazy).
 import { getPolyFunder, setPolyFunder, isAddressLike } from '../lib/polyFunder.js'
 
@@ -652,6 +652,8 @@ function PolyFunderField({ signer }: { signer: string }) {
   const valid = val === '' || isAddressLike(val)
   const isEoa = val.trim().toLowerCase() === signer.toLowerCase()
 
+  const [check, setCheck] = useState('')
+
   const commit = () => {
     if (!valid) return
     setPolyFunder(val.trim())
@@ -660,6 +662,17 @@ function PolyFunderField({ signer }: { signer: string }) {
     setTimeout(() => setSaved(false), 1500)
     // Balances/positions are read from the maker, so re-read for the new account.
     refreshBrowserPortfolio(signer).catch(() => {})
+    // Ask the CLOB whether it actually recognises this maker. Catching a wrong or
+    // un-onboarded address HERE beats discovering it as "maker address not allowed"
+    // after signing an order. Costs one MetaMask signature to derive L2 creds.
+    setCheck('Checking with Polymarket…')
+    verifyMaker(signer)
+      .then(r => setCheck(
+        r.ok
+          ? `Recognised (type ${r.sigType}) — ${(r.balance ?? 0).toFixed(2)} USDC available`
+          : (r.error ?? 'Not recognised by Polymarket'),
+      ))
+      .catch(() => setCheck('Could not reach Polymarket to verify'))
   }
 
   return (
@@ -698,6 +711,11 @@ function PolyFunderField({ signer }: { signer: string }) {
       <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: !valid ? C.RED : isEoa ? C.GOLD : 'var(--tc-dim3)', lineHeight: 1.4 }}>
         {!valid ? STR.POLY_FUNDER_BAD : isEoa ? STR.POLY_FUNDER_IS_EOA : val ? STR.POLY_FUNDER_OK : STR.POLY_FUNDER_HINT}
       </span>
+      {check && (
+        <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: /Recognised/.test(check) ? C.GREEN : C.GOLD, lineHeight: 1.4 }}>
+          {check}
+        </span>
+      )}
     </div>
   )
 }

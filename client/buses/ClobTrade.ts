@@ -235,6 +235,35 @@ async function withAuthRetry(
   }
 }
 
+/**
+ * Ask the CLOB what it thinks of the configured maker, BEFORE any order is signed.
+ *
+ * getBalanceAllowance() is answered for whatever (funder, signatureType) the client
+ * was built with, so it is the one call that distinguishes "Polymarket knows this
+ * account and it holds collateral" from "this address is not a registered maker" --
+ * which is the difference between a working setup and the opaque
+ * "maker address not allowed, please use the deposit wallet flow" at order time.
+ *
+ * Used by the Wallet panel when an address is saved, so a wrong or un-onboarded
+ * address is caught immediately rather than on the next trade attempt.
+ */
+export async function verifyMaker(
+  signerAddr: string,
+): Promise<{ ok: boolean; maker: string; sigType: number; balance?: number; error?: string }> {
+  const { funder, sigType } = makerFor(signerAddr)
+  try {
+    const c = await client(signerAddr)
+    const r = await (c as unknown as {
+      getBalanceAllowance(p: { asset_type: string }): Promise<{ balance?: string }>
+    }).getBalanceAllowance({ asset_type: 'COLLATERAL' })
+    // Balance is in collateral micro-units (6dp).
+    const bal = Number(r?.balance ?? 0) / 1e6
+    return { ok: true, maker: funder, sigType, balance: Number.isFinite(bal) ? bal : 0 }
+  } catch (e) {
+    return { ok: false, maker: funder, sigType, error: friendlyClobError((e as Error)?.message || 'Could not verify') }
+  }
+}
+
 /** Marketable BUY for `usd`, capped at `maxPriceCents` (FOK). MetaMask signs. */
 export async function browserBuy(address: string, tokenId: string, usd: number, maxPriceCents = 99): Promise<BrowserFill> {
   try {

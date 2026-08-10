@@ -92,3 +92,10 @@ export function resetClobCaches(): void {
   if (!_mod) return
   void _mod.then(m => m.resetClobCaches()).catch(() => {})
 }
+
+/** Verify the configured Polymarket maker against the CLOB (see ClobTrade). */
+export async function verifyMaker(
+  signerAddr: string,
+): Promise<{ ok: boolean; maker: string; sigType: number; balance?: number; error?: string }> {
+  return (await mod()).verifyMaker(signerAddr)
+}
