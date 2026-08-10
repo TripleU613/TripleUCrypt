@@ -209,28 +209,60 @@ fi
 log "helper commands"
 cat > /usr/local/bin/tuc-deploy <<'SH'
 #!/usr/bin/env bash
-# Clone-or-pull, rebuild, bring the stack up, wait for health.
+# Pull the image GitHub already built (docker.yml -> GHCR) and restart. Falls back
+# to a local source build only if the prebuilt image can't be pulled.
+#
+# WHY: docker.yml builds and publishes the image on every push using GitHub's fast
+# runners. Rebuilding the SAME image here on a 2-core box was a ~10 min duplicate of
+# work already done in ~2 min upstream. Pulling makes a deploy ~30s.
 set -euo pipefail
 SRC=/opt/tripleucrypt/src
+IMG=ghcr.io/tripleu613/tripleucrypt
 export GIT_SSH_COMMAND="ssh -i /root/.ssh/tuc_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 if [ -d "$SRC/.git" ]; then
-  echo "==> pull"
+  echo "==> pull source"
   git -C "$SRC" fetch --depth 1 origin main
   git -C "$SRC" reset --hard origin/main
 else
-  echo "==> clone"
+  echo "==> clone source"
   rm -rf "$SRC"; mkdir -p "$SRC"
   git clone --depth 1 -b main git@github.com:TripleU613/TripleUCrypt.git "$SRC"
 fi
-echo "==> $(git -C "$SRC" rev-parse --short HEAD) $(git -C "$SRC" log -1 --format=%s)"
+SHA=$(git -C "$SRC" rev-parse --short HEAD)
+echo "==> $SHA $(git -C "$SRC" log -1 --format=%s)"
 cd /opt/tripleucrypt
+
+# ── Prefer the prebuilt image for THIS commit ─────────────────────────────────
+# docker.yml tags with the short SHA. It runs in PARALLEL with this deploy, so poll
+# briefly for the tag. Distinguish "not published yet" (retry) from "unauthorized"
+# (package is private / no creds -> give up now and build, don't waste minutes).
+prebuilt=0
+for i in $(seq 1 12); do
+  err=$(docker pull "$IMG:$SHA" 2>&1) && { prebuilt=1; break; }
+  if echo "$err" | grep -qiE 'unauthorized|denied|forbidden'; then
+    echo "==> prebuilt image not accessible (private package / no creds) -- building from source"
+    echo "    make the GHCR package public, or 'docker login ghcr.io' on this box, to skip builds"
+    break
+  fi
+  echo "==> waiting for docker.yml to publish $IMG:$SHA ($i/12)…"
+  sleep 15
+done
+
 PROFILES=()
 if [ -s tunnel.env ] && grep -q '^TUNNEL_TOKEN=.\+' tunnel.env; then
   PROFILES=(--profile tunnel); echo "==> tunnel token present"
-else
-  echo "==> no tunnel token yet, app only (use tuc-tunnel to add one)"
 fi
-docker compose "${PROFILES[@]}" up -d --build
+
+if [ "$prebuilt" = 1 ]; then
+  # Tag it as the name compose expects, then run WITHOUT --build so compose uses it.
+  docker tag "$IMG:$SHA" tripleucrypt:local
+  echo "==> using prebuilt image (no local build)"
+  docker compose "${PROFILES[@]}" up -d
+else
+  echo "==> building from source (fallback)"
+  docker compose "${PROFILES[@]}" up -d --build
+fi
+
 echo "==> waiting for health"
 for i in $(seq 1 30); do
   s=$(docker inspect -f '{{.State.Health.Status}}' tripleucrypt 2>/dev/null || echo starting)
