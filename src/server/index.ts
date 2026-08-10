@@ -16,6 +16,7 @@ import { bumpGeneration, getSignal } from '../engine/session.js'
 import { sseHandler } from './sse.js'
 import { dispatch } from './actions.js'
 import { flushSettingsSync } from '../io/settings.js'
+import { attachOnboardWs } from '../onboard/routes.js'
 import { POLYGON_RPC } from '../banking/models.js'
 
 const app = express()
@@ -273,11 +274,16 @@ initAllState()
 
 const PORT = parseInt(process.env['PORT'] ?? '8200', 10)
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`TripleUCrypt server on :${PORT}`)
   bumpGeneration()
   runAllBackgroundTasks(getSignal()).catch(console.error)
 })
+
+// Guided-onboarding remote browser (server-driven; see src/onboard/). Attaches a
+// WebSocket to this same server, so it rides the existing origin + Cloudflare Access
+// and opens no new port. Inert until a client connects to /onboard/ws.
+attachOnboardWs(server)
 
 // Flush any pending (debounced) settings write before the process goes away,
 // so a quick exit can't drop the latest preference change.
