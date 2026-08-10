@@ -225,6 +225,11 @@ export async function runRefreshBalance(): Promise<void> {
   // user may have toggled practice↔live; if so we must DROP this result rather
   // than patch stale figures over the new mode (last-writer-wins race).
   const startedPractice = state.practice
+  // Same race across the SIGN mode: server and browser are different accounts, so a
+  // refresh that started in server mode must not land its figures after the user has
+  // switched to browser mode (it would show the server account's money under the
+  // browser account, the bug clear-on-switch is meant to prevent).
+  const startedSignMode = state.sign_mode
   // Browser (wallet) mode: the connected wallet's balances are read client-side
   // and own these fields — don't let the server (env wallet) clobber them.
   if (!state.practice && state.sign_mode === 'wallet') { patch('trading_configured', true); return }
@@ -261,6 +266,7 @@ export async function runRefreshBalance(): Promise<void> {
     // FIX B: mode changed while we were awaiting → these figures belong to the
     // old mode. Drop them so we don't flash practice numbers in live (or v.v.).
     if (state.practice !== startedPractice) return
+    if (state.sign_mode !== startedSignMode) return
 
     if (statsResult.status === 'fulfilled') {
       const st = statsResult.value

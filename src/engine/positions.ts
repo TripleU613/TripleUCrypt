@@ -168,6 +168,9 @@ export async function runRefreshPositions(): Promise<void> {
   // result if the user toggled practice↔live mid-flight (race with the periodic
   // scoreboard refresh → last-writer-wins showing the wrong mode's holdings).
   const startedPractice = state.practice
+  // Same for the sign mode: server and browser are different accounts, so a refresh
+  // begun in one must not land after the user switched to the other.
+  const startedSignMode = state.sign_mode
   // Browser (wallet) mode: positions are read client-side from the connected
   // wallet — the server must not overwrite them with the env wallet's.
   if (!state.practice && state.sign_mode === 'wallet') return
@@ -180,6 +183,7 @@ export async function runRefreshPositions(): Promise<void> {
     // FIX B: mode changed while awaiting → these positions belong to the old
     // mode. Drop them rather than patch the wrong mode's holdings.
     if (state.practice !== startedPractice) return
+    if (state.sign_mode !== startedSignMode) return
     // Filter out recently sold + dust
     const visible = positions.filter(p => {
       const tokenId = (p['token'] as string) ?? ''

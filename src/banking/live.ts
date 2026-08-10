@@ -7,6 +7,9 @@
  * returned from any method, never logged, and never reach the client.
  */
 
+import { createRequire } from "module"
+import { defaultWallet, LocalWallet } from "./local-wallet.js"
+import { getPolyProxy } from "../io/settings.js"
 import crypto from "crypto";
 import { createPublicClient, http, getAddress } from "viem";
 import { polygon } from "viem/chains";
@@ -20,6 +23,18 @@ import {
   DEFAULT_TICK, MIN_ORDER_USD, MIN_SHARES,
 } from "./models.js";
 import { withRetries, shortError } from "./resilience.js";
+
+// This module deliberately loads several dependencies LAZILY and SYNCHRONOUSLY via
+// require(): the heavy ones (ClobClient, ethers, viem) to keep them off the startup
+// path, and local-wallet/settings because isConfigured()/_keySource() are called
+// synchronously from all over the engine and cannot be made async.
+//
+// package.json sets "type": "module" and tsc emits ESM, so the bare `require` those
+// call sites used was UNDEFINED at runtime. Every one threw, and each was wrapped in
+// a try/catch that returned a falsy default — so isConfigured() reported false even
+// with a generated wallet on disk, and server mode could never see its own wallet.
+// createRequire restores a working require without changing any of that structure.
+const require = createRequire(import.meta.url)
 
 // ── Env helpers ───────────────────────────────────────────────────────────────
 
@@ -39,7 +54,6 @@ function _envConfigured(): boolean {
 
 function _localUsable(): boolean {
   try {
-    const { defaultWallet } = require("./local-wallet.js") as typeof import("./local-wallet.js");
     const w = defaultWallet();
     if (!w.exists()) return false;
     return true; // plaintext mode — always usable
@@ -48,14 +62,40 @@ function _localUsable(): boolean {
   }
 }
 
-function _liveAddress(): string {
-  if (_envConfigured()) return process.env["POLY_WALLET_ADDRESS"] ?? "";
+function _localEoaAddress(): string {
   try {
-    const { defaultWallet } = require("./local-wallet.js") as typeof import("./local-wallet.js");
     return defaultWallet().address();
   } catch {
     return "";
   }
+}
+
+/**
+ * The account that HOLDS the money and positions — the maker/funder.
+ *
+ * For .env setups POLY_WALLET_ADDRESS already IS the funder (it is used with
+ * signature_type 2), so that behaviour is unchanged. For a local/generated wallet the
+ * funder is its Polymarket proxy once onboarded; only before onboarding is it the
+ * bare EOA. Reading the EOA while trading against a proxy showed an empty balance and
+ * no positions for an account that actually held both.
+ */
+function _fundingAddress(): string {
+  if (_envConfigured()) return process.env["POLY_WALLET_ADDRESS"] ?? "";
+  try {
+    const proxy = getPolyProxy();
+    if (proxy) return proxy;
+  } catch { /* settings unreadable — fall back to the EOA */ }
+  return _localEoaAddress();
+}
+
+/**
+ * The EOA that SIGNS and pays gas. On-chain actions performed with the private key
+ * (0x swaps, direct EOA transfers) must use this, never the proxy — the key cannot
+ * move the proxy's tokens directly. Env behaviour is deliberately left as it was.
+ */
+function _signerAddress(): string {
+  if (_envConfigured()) return process.env["POLY_WALLET_ADDRESS"] ?? "";
+  return _localEoaAddress();
 }
 
 interface KeySource {
@@ -77,7 +117,6 @@ function _keySource(): KeySource | null {
     };
   }
   try {
-    const { defaultWallet } = require("./local-wallet.js") as typeof import("./local-wallet.js");
     const w = defaultWallet();
     if (!w.exists()) return null;
     const pw = process.env["TUC_WALLET_PASSWORD"] || undefined;
@@ -86,7 +125,6 @@ function _keySource(): KeySource | null {
     // We need the raw private key for ClobClient
     // The signer is a PrivateKeyAccount — its private key is stored in the file
     // Re-read directly for ClobClient
-    const { LocalWallet } = require("./local-wallet.js") as typeof import("./local-wallet.js");
     void LocalWallet; // just a check
     // Read plaintext key
     const fs = require("fs") as typeof import("fs");
@@ -102,7 +140,6 @@ function _keySource(): KeySource | null {
     // and orders must be signed against THAT (funder = proxy, signature_type 2) —
     // exactly like the browser path. A bare EOA (funder = addr, type 0) is not an
     // accepted maker, so it is only the pre-onboarding fallback.
-    const { getPolyProxy } = require("../io/settings.js") as typeof import("../io/settings.js");
     const proxy = getPolyProxy();
     const useProxy = proxy && proxy.toLowerCase() !== addr.toLowerCase();
     return {
@@ -131,6 +168,9 @@ let _credsReady = false;
 export function resetLiveClient(): void {
   _clientCache = null;
   _credsReady = false;
+  // NOTE: the broker's PER-MAKER readiness (_readyDone, _tradeableOk) must be cleared
+  // too, but that lives on the adapter in ./index.js which imports THIS module —
+  // reaching back would be a cycle. Callers reset both (see set_server_proxy).
 }
 
 // Build the ClobClient with a REAL ethers signer and L2 API creds. clob-client
@@ -208,6 +248,12 @@ export class LiveBroker implements Broker {
 
   private _inflight = new Set<string>();
   private _readyDone = false;
+
+  /** Drop per-maker cached readiness so a new proxy re-verifies from scratch. */
+  resetMakerState(): void {
+    this._readyDone = false;
+    this._tradeableOk = false;
+  }
   private _sendLocked = false;
   txHistoryError = "";
 
@@ -234,7 +280,7 @@ export class LiveBroker implements Broker {
 
   async wallet(): Promise<WalletInfo> {
     if (!isConfigured()) return { address: "", native_usdc: 0, usdc_e: 0, total: 0 };
-    const addr = _liveAddress();
+    const addr = _fundingAddress();
     try {
       const [native, usdce] = await withRetries(
         () => Promise.all([
@@ -254,7 +300,7 @@ export class LiveBroker implements Broker {
     if (!isConfigured()) return { positions: [], total_value: 0, unrealized: 0, realized: 0 };
     try {
       // Fetch positions from CLOB data API
-      const wallet = _liveAddress();
+      const wallet = _fundingAddress();
       const resp = await withRetries(async () => {
         const r = await fetch(`https://data-api.polymarket.com/positions?user=${wallet}&sizeThreshold=0.01`);
         if (!r.ok) throw new Error(`positions fetch ${r.status}`);
@@ -474,13 +520,18 @@ export class LiveBroker implements Broker {
     if (this._readyDone) return { ok: true, error: "", detail: "already ready" };
     const src = _keySource();
     try {
-      if (src?.source === "local") {
+      // Branch on WHAT THE MAKER IS, not on where the key is stored. A local wallet
+      // that has been onboarded on Polymarket signs type-2 against its proxy, and the
+      // collateral lives in that proxy — running ensureEoaAllowances() would set
+      // allowances on the empty EOA and then report "ready", which is a false green
+      // light on a real-money path. Only a bare EOA (type 0) takes the EOA path.
+      if (src?.source === "local" && src.signature_type === 0) {
         const { ensureEoaAllowances } = await import("./eoa-allowance.js");
         const hashes = await ensureEoaAllowances(src.private_key);
         this._readyDone = true;
         return { ok: true, error: "", detail: `allowances set (${hashes.length} tx)` };
       }
-      // .env proxy path — CLOB gasless allowance
+      // Proxy maker (.env or an onboarded local wallet) — CLOB gasless allowance
       const client = await _makeClient();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await client.updateBalanceAllowance({ assetType: "COLLATERAL" } as any);
@@ -547,14 +598,14 @@ export class LiveBroker implements Broker {
 
   async depositAddress(): Promise<{ address: string; chain: string; token: string } | Record<string, never>> {
     if (!isConfigured()) return {};
-    const addr = _liveAddress();
+    const addr = _fundingAddress();
     return addr ? { address: addr, chain: "Polygon", token: "USDC" } : {};
   }
 
   async txHistory(limit = 25): Promise<Record<string, unknown>[]> {
     this.txHistoryError = "";
     if (!isConfigured()) return [];
-    const addr = (_liveAddress() ?? "").toLowerCase();
+    const addr = (_fundingAddress() ?? "").toLowerCase();
     const apiKey = (process.env["POLYGONSCAN_API_KEY"] ?? "").trim();
     if (!addr || !apiKey) {
       if (addr && !apiKey) this.txHistoryError = "Activity unavailable — POLYGONSCAN_API_KEY not set.";
@@ -616,11 +667,13 @@ export class LiveBroker implements Broker {
     const { redeemEoa } = await import("./eoa-allowance.js");
     const src = _keySource();
     try {
-      if (src?.source === "local") {
+      // Bare EOA only: with a proxy maker the winning shares belong to the proxy, so
+      // redeemEoa would redeem the wrong (empty) account and report success.
+      if (src?.source === "local" && src.signature_type === 0) {
         const tx = await redeemEoa(src.private_key, conditionId);
         return { ok: true, error: "", detail: tx };
       }
-      // .env proxy path — not implemented in TS (see live.py for the Safe execTransaction path)
+      // Proxy path — not implemented in TS (see live.py for the Safe execTransaction path)
       return { ok: false, error: "Proxy redeem not implemented in TS layer", detail: "" };
     } catch (e) {
       console.warn("redeem() error:", shortError(e));
@@ -631,8 +684,14 @@ export class LiveBroker implements Broker {
   async send(usdc: number, to: string): Promise<OrderResult> {
     if (!isConfigured()) return { ok: false, error: "Not configured", detail: "" };
     const src = _keySource();
-    if (src?.source === "local") {
+    if (src?.source === "local" && src.signature_type === 0) {
       return this._sendEoa(usdc, to, src.private_key);
+    }
+    // Onboarded local wallet: the money is in the Polymarket proxy, which this key
+    // cannot move directly (it needs a Safe execTransaction, same gap as .env proxy
+    // redeem). Refuse clearly rather than silently sending from the empty EOA.
+    if (src?.source === "local") {
+      return { ok: false, error: "Withdraw from a Polymarket wallet isn't supported yet — use Polymarket's own withdraw", detail: "" };
     }
     const sendEnabled = ["1", "true", "yes", "on"].includes(
       (process.env["TUC_SEND_ENABLED"] ?? "").trim().toLowerCase()
@@ -744,7 +803,7 @@ export class LiveBroker implements Broker {
     if (sell === buy) return { ok: false, error: "Pick two different tokens", detail: "" };
     try {
       const { getSwapQuote, executeSwap } = await import("./swap.js");
-      const account = _liveAddress();
+      const account = _signerAddress();
       // POL has 18 decimals; USDC variants 6.
       const base = sell === "POL" ? BigInt(Math.round(amount * 1e18)) : BigInt(Math.round(amount * 1e6));
       const quote = await getSwapQuote({ sell, buy, sellAmount: base, taker: account });
@@ -787,7 +846,7 @@ export class LiveBroker implements Broker {
   private async _sendEoa(usdc: number, to: string, privateKey: string): Promise<OrderResult> {
     const dest = _validAddress(to);
     if (!dest) return { ok: false, error: "Invalid destination address", detail: "" };
-    const own = _liveAddress();
+    const own = _signerAddress();
     if (own && dest.toLowerCase() === own.toLowerCase()) {
       return { ok: false, error: "Destination is this wallet (self-send)", detail: "" };
     }

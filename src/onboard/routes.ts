@@ -16,6 +16,8 @@ import type { Server } from 'http'
 import { onboardBrowser, type Input } from './browser.js'
 
 const WS_PATH = '/onboard/ws'
+// Drop frames once this much is already queued for the viewer (~2 frames' worth).
+const MAX_BUFFERED_BYTES = 512 * 1024
 
 export function attachOnboardWs(server: Server): void {
   // Lazy import: `ws` is already a dependency, and this keeps the onboarding
@@ -32,17 +34,37 @@ export function attachOnboardWs(server: Server): void {
 
     wss.on('connection', (ws: import('ws').WebSocket) => {
       let detach: (() => void) | null = null
+      // The socket can close DURING attach() — which awaits a multi-second Chromium
+      // launch for the first viewer. Without this flag, close fires while detach is
+      // still null (a no-op), attach() then resolves and adds the sink anyway, and
+      // sinks.size never returns to 0 — so the idle-kill timer is never armed and the
+      // headless Chromium stays resident forever. Track closure and detach whenever
+      // the attach resolves late.
+      let closed = false
+      const release = (): void => {
+        closed = true
+        detach?.()
+        detach = null
+      }
 
       // Frames out. ws.send can throw on a half-closed socket; swallow so a dead
       // viewer never propagates into the browser controller.
+      //
+      // DROP rather than queue when the viewer can't keep up: frames arrive
+      // continuously (everyNthFrame 1) and a slow socket (mobile, congested tunnel)
+      // would otherwise pile base64 JPEGs into ws's unbounded send buffer and grow
+      // RSS on a 2 GB box. One frame in flight is enough; the newest frame is the
+      // only one worth showing anyway.
       const sink = (f: { data: string; w: number; h: number }): void => {
         try {
-          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ t: 'frame', ...f }))
+          if (ws.readyState !== ws.OPEN) return
+          if (ws.bufferedAmount > MAX_BUFFERED_BYTES) return
+          ws.send(JSON.stringify({ t: 'frame', ...f }))
         } catch { /* viewer gone */ }
       }
 
       onboardBrowser.attach(sink)
-        .then(fn => { detach = fn })
+        .then(fn => { if (closed) fn(); else detach = fn })
         .catch(err => {
           try { ws.send(JSON.stringify({ t: 'error', message: String(err instanceof Error ? err.message : err) })) } catch { /* */ }
           try { ws.close() } catch { /* */ }
@@ -55,8 +77,8 @@ export function attachOnboardWs(server: Server): void {
         else if (msg.t === 'nav' && typeof msg.url === 'string') void onboardBrowser.navigate(msg.url)
       })
 
-      ws.on('close', () => { detach?.() })
-      ws.on('error', () => { detach?.() })
+      ws.on('close', release)
+      ws.on('error', release)
     })
 
     console.log(`onboard ws mounted at ${WS_PATH}`)

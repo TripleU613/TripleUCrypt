@@ -129,6 +129,13 @@ export function setSignMode(mode: string): void {
     patch('stat_cash', 0); patch('stat_spendable', 0)
     patch('stat_wallet', 0); patch('stat_has_wallet', false)
     patch('positions', [])
+    // P&L and the W/L record are per-account too — they were left behind on the top
+    // bar, so the server wallet's profit and win/loss record stayed visible while the
+    // browser account was selected (and vice versa).
+    patch('stat_profit', 0); patch('stat_accuracy', 0)
+    patch('stat_wins', 0); patch('stat_losses', 0)
+    patch('wallet_balance', 0)
+    patch('wallet_native_usdc', 0); patch('wallet_usdc_e', 0)
     // Server mode: its refresh is gated off during wallet mode, so kick it now
     // rather than wait for the 5s loop. Browser mode: the client re-runs
     // refreshBrowserPortfolio off the sign_mode change (see App.tsx).

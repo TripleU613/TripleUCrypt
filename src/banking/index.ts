@@ -201,6 +201,17 @@ let _liveAdapter: BrokerAdapter | null = null
  *              otherwise null so live mode reads as "not configured" instead of
  *              silently trading with practice money.
  */
+/**
+ * Clear the live broker's per-maker cached readiness (see LiveBroker.resetMakerState).
+ * Called when the maker/proxy changes so allowance + tradeable checks re-run for the
+ * new account instead of inheriting the previous one's verdict.
+ */
+export function resetLiveBrokerState(): void {
+  // BrokerAdapter holds the wrapped broker as its private `b`.
+  const inner = _liveAdapter ? (_liveAdapter as unknown as { b?: { resetMakerState?: () => void } }).b : null
+  inner?.resetMakerState?.()
+}
+
 export function getBroker(practice = true): EngineBroker | null {
   if (practice) {
     if (!_paperAdapter) {

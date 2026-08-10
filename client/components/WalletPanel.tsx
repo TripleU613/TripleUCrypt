@@ -632,8 +632,8 @@ function WalletModeSection() {
           Browser: the connected wallet's proxy (client-side). Server: the generated
           wallet's proxy (server-side). Same embedded-browser onboarding either way. */}
       {isWallet
-        ? (mmAddress && <PolyFunderField signer={mmAddress} />)
-        : <PolyFunderField server signer={localWalletAddr} />}
+        ? (mmAddress && <PolyFunderField key="browser" signer={mmAddress} />)
+        : <PolyFunderField key="server" server signer={localWalletAddr} />}
     </Section>
   )
 }
@@ -659,8 +659,16 @@ function PolyFunderField({ signer, server = false }: { signer: string; server?: 
   const serverProxy = useStore(s => s.server_proxy)
   const [val, setVal] = useState(() => (server ? serverProxy : getPolyFunder()))
   const [saved, setSaved] = useState(false)
+  const [dirty, setDirty] = useState(false)
   const valid = val === '' || isAddressLike(val)
-  const isEoa = val.trim().toLowerCase() === signer.toLowerCase()
+
+  // server_proxy arrives from the server over SSE AFTER this mounts, so the useState
+  // initialiser reads '' and the field looked empty even with a proxy saved — which
+  // could then clear a real setting by saving blank. Adopt the hydrated value until
+  // the user starts editing.
+  useEffect(() => {
+    if (server && !dirty) setVal(serverProxy)
+  }, [server, dirty, serverProxy])
 
   const [check, setCheck] = useState('')
   const [showBrowser, setShowBrowser] = useState(false)
@@ -715,9 +723,12 @@ function PolyFunderField({ signer, server = false }: { signer: string; server?: 
         padding: `${SP.LG} ${SP.LG}`, borderRadius: D.R_CARD,
         border: '1px solid var(--tc-border)', background: 'var(--tc-card-alt)',
       }}>
-        <span style={{ fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, color: 'var(--tc-text-strong)' }}>
-          {STR.POLY_NEED_TITLE}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: SP.MD, width: '100%' }}>
+          <span style={{ flex: 1, fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO, color: 'var(--tc-text-strong)' }}>
+            {STR.POLY_NEED_TITLE}
+          </span>
+          <InfoTip text={STR.POLY_FUNDER_TIP} />
+        </div>
         <div style={rowStyle}><span style={numStyle}>1</span><span style={stepStyle}>{STR.POLY_NEED_1}</span></div>
         <div style={rowStyle}><span style={numStyle}>2</span><span style={stepStyle}>{STR.POLY_NEED_2}</span></div>
         <span style={{ fontSize: FS.NANO, fontFamily: FONT.MONO, color: 'var(--tc-dim3)', lineHeight: 1.4 }}>
@@ -752,7 +763,7 @@ function PolyFunderField({ signer, server = false }: { signer: string; server?: 
         <div style={{ display: 'flex', alignItems: 'center', gap: SP.XS, width: '100%' }}>
           <input
             value={val}
-            onChange={e => { setVal(e.target.value); setSaved(false); setCheck('') }}
+            onChange={e => { setVal(e.target.value); setDirty(true); setSaved(false); setCheck('') }}
             onBlur={commit}
             onKeyDown={e => { if (e.key === 'Enter') commit() }}
             placeholder={STR.POLY_FUNDER_PLACEHOLDER}

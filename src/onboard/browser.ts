@@ -21,8 +21,14 @@
  *     must never grow one.
  *
  * Lifecycle: launched on demand, killed when the last viewer disconnects or after an
- * idle timeout. Never resident. Runs as its own concern so it can be resource-capped
- * and can never OOM the trading engine.
+ * idle timeout. Never resident.
+ *
+ * CAVEAT (do not read more safety into this than exists): it currently runs INSIDE the
+ * app container, sharing the process's memory limits. docker-compose's
+ * deploy.resources.limits is Swarm-only and is ignored by `docker compose up`, so
+ * there is no enforced cap today — a heavy page could contend for RAM with the trading
+ * engine on a small box. Mitigations in place are on-demand launch + idle kill. Moving
+ * it to its own service with mem_limit is the real fix and is not done yet.
  */
 
 import type { Browser, Page, CDPSession } from 'playwright-core'
@@ -36,6 +42,25 @@ const DEVICE_SCALE = 2
 const SCREENCAST = { format: 'jpeg' as const, quality: 60, maxWidth: 780, maxHeight: 1560, everyNthFrame: 1 }
 const IDLE_KILL_MS = 90_000     // no viewer for this long → shut the browser down
 const START_URL = 'https://polymarket.com/'
+
+// Hosts the onboarding browser may be told to navigate to. Polymarket's login can
+// bounce through wallet/auth providers, so those are included; anything else (and
+// any non-https scheme) is refused. Exact host or subdomain match only — never a
+// substring test, which 'polymarket.com.evil.tld' would pass.
+const NAV_ALLOW_HOSTS = [
+  'polymarket.com',
+  'walletconnect.com',
+  'walletconnect.org',
+  'magic.link',
+]
+
+export function isAllowedNavTarget(raw: string): boolean {
+  let u: URL
+  try { u = new URL(raw) } catch { return false }
+  if (u.protocol !== 'https:') return false
+  const h = u.hostname.toLowerCase()
+  return NAV_ALLOW_HOSTS.some(d => h === d || h.endsWith('.' + d))
+}
 
 // Where the headless-shell binary lives. Installed on the box by provision.sh; the
 // env var lets a deployer point at a system Chromium instead. No bundled download.
@@ -99,6 +124,20 @@ class OnboardBrowser {
         '--disable-gpu',
       ],
     })
+    // Adopt the process IMMEDIATELY. If any later step throws, the catch below can
+    // close it — otherwise the launched Chromium would be unreachable (this.browser
+    // still null) and leak, AND `running` staying false would let the next attach()
+    // launch another one, piling up orphans on a flapping launch.
+    this.browser = browser
+    try {
+      await this._wire(browser)
+    } catch (e) {
+      await this.stop().catch(() => {})
+      throw e
+    }
+  }
+
+  private async _wire(browser: Browser): Promise<void> {
     const context = await browser.newContext({
       viewport: VIEWPORT,
       deviceScaleFactor: DEVICE_SCALE,
@@ -123,7 +162,6 @@ class OnboardBrowser {
       for (const s of this.sinks) { try { s(f) } catch { /* a bad sink must not kill the stream */ } }
     })
 
-    this.browser = browser
     this.page = page
     this.cdp = cdp
 
@@ -157,8 +195,25 @@ class OnboardBrowser {
     }
   }
 
-  /** Navigate the page (e.g. jump to the deposit screen). Never throws. */
+  /**
+   * Navigate the page (e.g. jump to the deposit screen). Never throws.
+   *
+   * ALLOWLISTED to the onboarding destinations on purpose. The URL arrives from the
+   * client over the WebSocket, and this browser runs server-side with --no-sandbox in
+   * the same container as the trading engine — an unrestricted goto() would render
+   * arbitrary internal targets (cloud metadata at 169.254.169.254, localhost:8200,
+   * file://) straight back to the caller as JPEG frames, i.e. a read-through SSRF.
+   * Single-tenant + Cloudflare Access keeps the blast radius to the box owner, but
+   * this module's contract is Polymarket onboarding, so it enforces exactly that.
+   *
+   * Note this only constrains EXPLICIT navigation requests; in-page links the user
+   * taps are Chromium's own navigation and are not (and need not be) filtered here.
+   */
   async navigate(url: string): Promise<void> {
+    if (!isAllowedNavTarget(url)) {
+      console.warn(`[onboard] blocked navigation to ${String(url).slice(0, 120)}`)
+      return
+    }
     try { await this.page?.goto(url, { waitUntil: 'domcontentloaded' }) } catch { /* ignore */ }
   }
 

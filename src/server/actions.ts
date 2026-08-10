@@ -440,8 +440,13 @@ export const actions: Record<string, (args: unknown[]) => Promise<void>> = {
     const { setPolyProxy } = await import('../io/settings.js')
     setPolyProxy(v)
     patch('server_proxy', v)
+    // Drop BOTH caches: the module-level ClobClient/derived L2 creds, and the
+    // broker's per-maker readiness verdicts (live.ts can't reach the adapter itself
+    // without an import cycle).
     const { resetLiveClient } = await import('../banking/live.js')
     resetLiveClient()
+    const { resetLiveBrokerState } = await import('../banking/index.js')
+    resetLiveBrokerState()
     // The server wallet's funds live in the proxy now — re-read against it.
     await Promise.all([trading.runRefreshBalance(), positions.runRefreshPositions()])
     patch('status', v ? 'Polymarket wallet saved' : 'Polymarket wallet cleared')
