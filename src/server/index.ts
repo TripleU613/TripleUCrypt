@@ -181,7 +181,18 @@ app.use('/assets', express.static(path.join(publicDir, 'assets'), {
   maxAge: '365d',
 }))
 
-// Everything else (index.html, icons, fonts, manifest) is NOT hashed, so it must
+// Fonts are ~914 kB and content-stable, but were revalidating on EVERY page load
+// under the maxAge:0 catch-all below -- two blocking round trips per load for bytes
+// that never change. Cache them hard.
+//
+// They are NOT content-hashed, so the rule is: if you ever change a font's bytes,
+// RENAME the file. Otherwise clients keep the old one for up to a year.
+app.use('/fonts', express.static(path.join(publicDir, 'fonts'), {
+  immutable: true,
+  maxAge: '365d',
+}))
+
+// Everything else (index.html, icons, manifest) is NOT hashed, so it must
 // stay revalidated — index.html especially, since it points at the hashed assets
 // and a stale copy would reference a bundle that no longer exists after a deploy.
 app.use(express.static(publicDir, { etag: true, lastModified: true, maxAge: 0 }))

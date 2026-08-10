@@ -176,6 +176,12 @@ export const STR = {
   TAB_REFILL: 'Refill',
   TAB_GAME:   'Game',
   TAB_REAL:   'Real',
+  // Mobile mode tab names the DESTINATION. The old labels named the current state,
+  // so the button reading "Game" was the one that switched to real money.
+  TAB_GO_REAL: 'Go Real',
+  TAB_GO_GAME: 'Go Game',
+  CONFIRM_GO_REAL:
+    'Switch to REAL money?\n\nOrders will spend actual funds from your wallet and are irreversible.',
   TAB_MARKET: 'Market',
   TAB_ACTIVITY_M: 'Activity',
 

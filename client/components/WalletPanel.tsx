@@ -629,7 +629,7 @@ function WalletModeSection() {
 
 // ── WalletPanel ───────────────────────────────────────────────────────────────
 
-function WalletPanelInner() {
+function WalletPanelInner({ onClose }: { onClose?: () => void }) {
   // Opening the wallet is a strong signal the signing chunk is about to be
   // needed; start fetching it now rather than on the first click.
   useEffect(() => { warmClob() }, [])
@@ -677,7 +677,7 @@ function WalletPanelInner() {
             ? <Spinner color={C.DIM3} />
             : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.DIM3} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>}
         </div>
-        <div onClick={() => call('close_wallet')} className="tc-hoverlift"
+        <div onClick={() => (onClose ? onClose() : call('close_wallet'))} className="tc-hoverlift"
           onMouseEnter={e => playFx(e.currentTarget.querySelector('svg'), 'shake')} style={iconBtn}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.DIM3} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
         </div>

@@ -476,10 +476,63 @@ export function EChart(): JSX.Element {
     }
     function onDbl() { candleView.current = { count: 70, offset: 0, targetCount: 70, targetOffset: 0, touched: false } }
 
-    canvas.addEventListener('mousemove', onMove)
-    canvas.addEventListener('mouseleave', onLeave)
-    canvas.addEventListener('mousedown', onDown)
-    window.addEventListener('mouseup', onUp)
+    // ── Pointer + pinch input ───────────────────────────────────────────────
+    // Pointer events cover mouse, touch and pen in one path. Two live pointers in
+    // candles mode is a pinch: suspend the pan and zoom on the distance ratio.
+    const pointers = new Map<number, { x: number; y: number }>()
+    let pinchDist = 0
+    let pinchCount = 0
+
+    function pinchSpan(): { d: number; cx: number } {
+      const [a, b] = [...pointers.values()]
+      if (!a || !b) return { d: 0, cx: 0 }
+      return { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2 }
+    }
+    function onPointerDown(e: PointerEvent) {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (pointers.size === 2 && modeRef.current === 'candles') {
+        const cv = candleView.current
+        dragRef.current.active = false        // a pinch is not a pan
+        pinchDist = pinchSpan().d
+        pinchCount = cv.targetCount != null ? cv.targetCount : cv.count
+        return
+      }
+      if (pointers.size === 1) onDown(e)
+    }
+    function onPointerMove(e: PointerEvent) {
+      if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (pointers.size === 2 && modeRef.current === 'candles' && pinchDist > 0) {
+        e.preventDefault()
+        const { d, cx } = pinchSpan()
+        if (d <= 0) return
+        const cv = candleView.current
+        cv.touched = true
+        const avail = (ohlcRef.current || []).length
+        const maxBars = Math.max(24, Math.min(1500, avail || 1500))
+        // Fingers apart (d > pinchDist) -> fewer bars -> zoom in.
+        const next = Math.max(Math.min(24, maxBars), Math.min(maxBars, pinchCount * (pinchDist / d)))
+        const rect = canvas.getBoundingClientRect()
+        const frac = Math.max(0, Math.min(1, (cx - rect.left) / Math.max(cssW - RPAD, 1)))
+        const old = cv.targetCount != null ? cv.targetCount : cv.count
+        const curOff = cv.targetOffset != null ? cv.targetOffset : cv.offset
+        cv.targetOffset = Math.max(0, curOff + (1 - frac) * (old - next))
+        cv.targetCount = next
+        hoverRef.current = null
+        return
+      }
+      onMove(e)
+    }
+    function onPointerUp(e: PointerEvent) {
+      pointers.delete(e.pointerId)
+      if (pointers.size < 2) pinchDist = 0
+      if (pointers.size === 0) onUp()
+    }
+
+    canvas.addEventListener('pointermove', onPointerMove)
+    canvas.addEventListener('pointerleave', onLeave)
+    canvas.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerUp)
     canvas.addEventListener('wheel', onWheel, { passive: false })
     canvas.addEventListener('dblclick', onDbl)
 
@@ -1608,10 +1661,11 @@ export function EChart(): JSX.Element {
       disposed = true
       if (raf) cancelAnimationFrame(raf)
       ro.disconnect()
-      canvas.removeEventListener('mousemove', onMove)
-      canvas.removeEventListener('mouseleave', onLeave)
-      canvas.removeEventListener('mousedown', onDown)
-      window.removeEventListener('mouseup', onUp)
+      canvas.removeEventListener('pointermove', onPointerMove)
+      canvas.removeEventListener('pointerleave', onLeave)
+      canvas.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerUp)
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('dblclick', onDbl)
     }
@@ -1630,7 +1684,17 @@ export function EChart(): JSX.Element {
         background: 'var(--tc-chart-bg)',
       }}
     >
-      <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: 'block', width: '100%', height: '100%',
+          // Candles pan/pinch: claim the gesture, or the browser scrolls the page
+          // instead and the drag never reaches us. Other modes have no gesture, so
+          // leave vertical scrolling to the page (essential on mobile, where the
+          // chart sits inside a scrolling column).
+          touchAction: mode === 'candles' ? 'none' : 'pan-y',
+        }}
+      />
     </div>
   )
 }

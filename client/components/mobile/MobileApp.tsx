@@ -18,6 +18,8 @@ import { TradingBar } from '../TradingBar.js'
 import { MarketPanel } from '../MarketPanel.js'
 import { WalletPanel } from '../WalletPanel.js'
 import { WindowNav } from '../nav/WindowNav.js'
+import { ghostSegStyle } from '../shared/ui.js'
+import { INTERVALS } from '../../lib/intervals.js'
 import { C, FONT, D, SP, SZ, FS, FW, STR } from '../../constants/index.js'
 
 type View = 'home' | 'activity' | 'wallet'
@@ -126,6 +128,64 @@ function StatsStrip() {
   )
 }
 
+/**
+ * Interval switcher (5m / 15m / 1h / 1d).
+ *
+ * Mobile previously READ state.interval and filtered markets by it, but had no way
+ * to CHANGE it -- so a phone was pinned to whichever interval the server happened
+ * to hold, and the 1h/1d windows were unreachable. Desktop has had this in
+ * components/left/LeftDock.tsx all along; this is the same control, same action,
+ * same INTERVALS source, sized for a thumb.
+ *
+ * Renders all four unconditionally, exactly like desktop: `set_interval` is the
+ * user's intent even when discovery has not yet found a market at that interval
+ * (see the self-healing note in src/server/actions.ts), and the server follows the
+ * selection to a tradeable window for the same asset where one exists. Deliberately
+ * does NOT subscribe to `windows` to grey out empty intervals -- that map is patched
+ * on every tick and would re-render this row constantly for a cosmetic hint.
+ */
+function IntervalSwitcher() {
+  const interval = useStore(s => s.interval)
+  return (
+    <div
+      role="tablist"
+      aria-label="Window length"
+      style={{
+        display: 'flex', gap: SP.XS, width: '100%', flexShrink: 0,
+        padding: SP.XXS, borderRadius: D.R_BTN,
+        border: '1px solid var(--tc-border)', background: 'var(--tc-card)',
+        boxSizing: 'border-box',
+      }}
+    >
+      {INTERVALS.map(v => {
+        const active = interval === v
+        return (
+          <button
+            key={v}
+            role="tab"
+            aria-selected={active}
+            data-tf={v}
+            onClick={() => { call('set_interval', v).catch(() => {}) }}
+            style={{
+              flex: '1 1 0', minWidth: 0,
+              // 34px keeps the tap target at a usable size after the
+              // scale-to-fit transform in useViewportScale() shrinks it.
+              height: '34px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: D.R_SM, cursor: 'pointer',
+              fontSize: FS.SM, fontWeight: FW.XBOLD, fontFamily: FONT.MONO,
+              WebkitTapHighlightColor: 'transparent',
+              ...ghostSegStyle(active, C.GREEN, false),
+            }}
+          >
+            {v}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function TopChrome({ view }: { view: View }) {
   const showChartRow = view === 'home'
   return (
@@ -134,6 +194,8 @@ function TopChrome({ view }: { view: View }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: SP.SM }}>
         <StatsStrip />
       </div>
+      {/* interval (5m/15m/1h/1d) — sits directly above the slots it re-scopes */}
+      {showChartRow && <IntervalSwitcher />}
       {/* time window — wide, full width */}
       {showChartRow && (
         <div style={{ display: 'flex', position: 'relative', height: SZ.S40, alignItems: 'center' }}>
@@ -149,14 +211,17 @@ interface Tab { key: string; label: string; icon: React.ReactNode; active: boole
 
 function BottomBar({ view, setView }: { view: View; setView: (v: View) => void }) {
   const practice = useStore(s => s.practice)
-  const windows = useStore(s => s.windows) as Record<string, unknown>[]
   const interval = useStore(s => s.interval)
-  const activeIdx = useStore(s => s.active_window)
 
   // Market is a BUTTON, not a view: tap advances to the next market (window) of
   // the current interval. The chart/odds follow via set_active_window; the coin
   // icon reflects the new market.
   const cycleMarket = () => {
+    // Read imperatively: subscribing to `windows`/`active_window` re-rendered the
+    // whole tab bar on every tick for values only this handler ever reads.
+    const st = useStore.getState()
+    const windows = (st.windows ?? []) as Record<string, unknown>[]
+    const activeIdx = st.active_window as number
     const mkts = windows.filter(w => String(w['interval'] ?? '') === interval && String(w['up_token'] ?? '') !== '')
     if (mkts.length < 2) return
     const curSlug = String(windows[activeIdx]?.['slug'] ?? '')
@@ -178,7 +243,20 @@ function BottomBar({ view, setView }: { view: View; setView: (v: View) => void }
 
   const tabs: Tab[] = [
     slot1,
-    { key: 'mode', label: practice ? STR.TAB_GAME : STR.TAB_REAL, icon: practice ? <IcoGamepad /> : <IcoCash />, active: false, accent: practice ? C.PURPLE : C.GREEN, onClick: () => call('toggle_practice').catch(() => {}) },
+    { key: 'mode',
+      // Label the DESTINATION, not the current state: this previously read "Game"
+      // while practice was on, so the tab saying "Game" was the one that switched
+      // to real money.
+      label: practice ? STR.TAB_GO_REAL : STR.TAB_GO_GAME,
+      icon: practice ? <IcoCash /> : <IcoGamepad />,
+      active: !practice,
+      accent: practice ? C.GREEN : C.PURPLE,
+      onClick: () => {
+        // Entering live mode spends real funds -- confirm first. Returning to
+        // paper is always safe, so that direction stays a single tap.
+        if (practice && !window.confirm(STR.CONFIRM_GO_REAL)) return
+        call('toggle_practice').catch(() => {})
+      } },
     { key: 'market', label: STR.TAB_MARKET, icon: <CoinIcon />, active: false, onClick: cycleMarket },
     { key: 'activity', label: STR.TAB_ACTIVITY_M, icon: <IcoList />, active: view === 'activity', accent: C.BTC, onClick: () => setView('activity') },
   ]
@@ -302,7 +380,7 @@ function MobileAppInner({ unveiling }: { unveiling: boolean }) {
 
           {view === 'wallet' && (
             <div className="tc-mob-wallet" style={{ flex: 1, minHeight: 0, width: '100%', maxWidth: '100%', overflowX: 'hidden' }}>
-              <WalletPanel />
+              <WalletPanel onClose={() => setView('home')} />
             </div>
           )}
         </div>

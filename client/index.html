@@ -30,6 +30,15 @@
     </style>
 
     <!-- Icons -->
+    <!-- Font preload. The @font-face rules live in client/theme.ts, injected as a
+         <style> by main.tsx -- so without these links the browser cannot even
+         DISCOVER the fonts until the ~464 kB entry bundle has downloaded, parsed
+         and executed. Preloading starts both fetches on the first round trip
+         instead, in parallel with the JS. crossorigin is required on font
+         preloads or the fetch is made twice. -->
+    <link rel="preload" href="/fonts/inter-polymarket.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="preload" href="/fonts/orbitron.ttf" as="font" type="font/ttf" crossorigin />
+
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />

@@ -617,6 +617,46 @@ function InfoCard({ children }: { children: ReactNode }) {
 
 // ── Buy panel ─────────────────────────────────────────────────────────────────
 
+/**
+ * Claim entry point for mobile.
+ *
+ * The only claim UI in the app lives in SellPanel, which never renders: nothing
+ * dispatches `set_panel_tab` and src/engine/positions.ts pins `panel_tab` to
+ * 'buy'. So a resolved winner could only be redeemed through the small refresh
+ * icon in the live-only wallet view -- undiscoverable, and absent in practice
+ * mode. That left real money sitting unclaimed.
+ *
+ * Uses computeClaimablePositions() rather than an inline filter so this can never
+ * drift from the server's own definition of claimable (src/engine/positions.ts).
+ * Renders nothing when there is nothing to claim, so it costs no vertical space
+ * on a phone in the common case.
+ */
+function MobileClaimBanner({ positions }: { positions: Record<string, unknown>[] }) {
+  const claimable = computeClaimablePositions(positions)
+  if (claimable.length === 0) return null
+  const label = claimable.length === 1
+    ? '1 resolved position ready to claim'
+    : `${claimable.length} resolved positions ready to claim`
+  return (
+    <button
+      onClick={() => { call('claim_winnings').catch(() => {}) }}
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: D.GAP_MD,
+        padding: `${SP.MD} ${SP.LG}`, borderRadius: D.R_CTRL,
+        border: `1px solid ${C.GREEN_BORDER}`, background: C.GREEN_BG,
+        cursor: 'pointer', WebkitTapHighlightColor: 'transparent', textAlign: 'left',
+      }}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.GREEN} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+      <span style={{ color: C.GREEN, fontSize: FS.SM, fontWeight: FW.BOLD, fontFamily: FONT.MONO, flex: 1 }}>{label}</span>
+      <span style={{
+        color: 'var(--tc-bg)', fontSize: FS.XS, fontWeight: FW.XBOLD, fontFamily: FONT.MONO,
+        background: C.GREEN, padding: `${SP.XXS} ${SP.LG}`, borderRadius: D.R_SM, flexShrink: 0,
+      }}>{STR.CLAIM}</span>
+    </button>
+  )
+}
+
 function BuyPanel({ mobile = false }: { mobile?: boolean } = {}) {
   const upAsk = useStore(s => s.up_ask) as number
   const upToken = useStore(s => s.up_token) as string
@@ -646,8 +686,33 @@ function BuyPanel({ mobile = false }: { mobile?: boolean } = {}) {
   if (mobile) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: SP.XL, width: '100%', padding: SP.XXL }}>
-        {/* Buying type — full-width, taps to cycle 1-Tap/Market/Limit */}
-        <BuyModeBtn wide />
+        {/* Buying type + time-to-close. The countdown is not decoration on a
+
+            5-minute market: without it an order can be placed with seconds left
+
+            and no way to see it. Desktop has always shown this. */}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: SP.MD, width: '100%' }}>
+
+          <div style={{ flex: 1, minWidth: 0 }}><BuyModeBtn wide /></div>
+
+          <div style={{
+
+            flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+
+            minWidth: '74px', padding: `${SP.SM} ${SP.MD}`, borderRadius: D.R_BTN,
+
+            border: '1px solid var(--tc-border)', background: 'var(--tc-card)',
+
+            fontSize: FS.LG, fontWeight: FW.BLACK,
+
+          }}>
+
+            <Countdown endTs={activeEndTs} intervalS={activeIntervalS} />
+
+          </div>
+
+        </div>
 
         {/* was (open) · is (live) · by how much (delta) */}
         {hasAsks ? (
@@ -669,6 +734,10 @@ function BuyPanel({ mobile = false }: { mobile?: boolean } = {}) {
             <SkelBox w="100%" h={SZ.S70} radius={D.R_CARD} /><SkelBox w="100%" h={SZ.S70} radius={D.R_CARD} /><SkelBox w="100%" h={SZ.S70} radius={D.R_CARD} />
           </div>
         )}
+
+        {/* Claim — resolved winners are redeemable but had no entry point here */}
+
+        <MobileClaimBanner positions={positions} />
 
         {/* down (left) / up (right) — big */}
         {hasAsks ? (
