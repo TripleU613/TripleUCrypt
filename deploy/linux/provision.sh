@@ -263,6 +263,23 @@ else
   docker compose "${PROFILES[@]}" up -d --build
 fi
 
+# The tuc_data volume keeps whatever ownership it was seeded with, so if the image's
+# app uid ever differs from the volume's, /app/data silently becomes unwritable (this
+# happened once: adding packages shifted the auto-assigned uid, and settings + the
+# trade-audit log stopped persisting without an error). The uid is pinned in the
+# Dockerfile now; this realigns an already-seeded volume so an old one still works.
+# Use --volumes-from so this works regardless of the compose project's volume prefix
+# (the volume is "<project>_tuc_data", not "tuc_data" -- targeting the bare name silently
+# creates a NEW empty volume and fixes nothing).
+APP_UID=$(docker exec tripleucrypt id -u 2>/dev/null || echo "")
+if [ -n "$APP_UID" ]; then
+  VOL_OWNER=$(docker exec tripleucrypt stat -c %u /app/data 2>/dev/null || echo "")
+  if [ -n "$VOL_OWNER" ] && [ "$VOL_OWNER" != "$APP_UID" ]; then
+    echo "==> data volume owned by uid $VOL_OWNER but app runs as $APP_UID -- realigning"
+    docker run --rm --volumes-from tripleucrypt --entrypoint chown alpine -R "$APP_UID:$APP_UID" /app/data || true
+  fi
+fi
+
 echo "==> waiting for health"
 for i in $(seq 1 30); do
   s=$(docker inspect -f '{{.State.Health.Status}}' tripleucrypt 2>/dev/null || echo starting)

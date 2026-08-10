@@ -47,7 +47,14 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=builder /app/dist ./dist
 
 # Non-root user
-RUN groupadd -r tripleu && useradd -r -g tripleu -d /app tripleu \
+# PIN the uid/gid. These were previously auto-assigned by groupadd/useradd -r, which
+# picks the next free system id — so adding any package that creates a system user
+# SHIFTED the app's uid on rebuild (999 -> 997 when xvfb/x11vnc went in). The tuc_data
+# named volume keeps the ownership it was seeded with, so after that shift /app/data was
+# owned by a uid the app no longer had: settings, the paper ledger and the trade-audit
+# log all became unwritable, and settings/audit writes are best-effort so they failed
+# SILENTLY. A fixed id makes the volume's ownership stable across rebuilds forever.
+RUN groupadd -r -g 10001 tripleu && useradd -r -u 10001 -g tripleu -d /app tripleu \
     && mkdir -p /app/data && chown -R tripleu:tripleu /app
 # Xvfb creates its socket under /tmp/.X11-unix; the container runs as a NON-ROOT user,
 # so the directory has to exist with the usual sticky-world-writable perms or the

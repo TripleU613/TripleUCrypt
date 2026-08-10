@@ -132,8 +132,16 @@ class VncBrowser {
       if (!fs.existsSync(sock)) throw new Error('Xvfb failed to start (no X socket)')
 
       // 2. Headed Chromium ON that display, with a persistent profile.
-      const dir = profileDir()
-      fs.mkdirSync(dir, { recursive: true })
+      // A persistent profile is preferred (logins survive), but it must never be the
+      // reason the browser won't open: if the data dir isn't writable, fall back to a
+      // throwaway profile under /tmp and carry on.
+      let dir = profileDir()
+      try {
+        fs.mkdirSync(dir, { recursive: true })
+      } catch (e) {
+        console.warn(`[onboard] persistent profile unavailable (${e instanceof Error ? e.message : e}); using a temporary one`)
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-profile-'))
+      }
       this.chrome = spawn(chromiumBin(), [
         `--user-data-dir=${dir}`,
         `--window-size=${SCREEN_W},${SCREEN_H}`,
