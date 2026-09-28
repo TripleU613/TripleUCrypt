@@ -21,7 +21,7 @@ on:
 jobs:
   typecheck:
     name: Type-check (Node 20 & 22)
-    runs-on: ubuntu-latest
+    runs-on: ${{ !contains(fromJSON('["pull_request","pull_request_review","pull_request_target","issue_comment","workflow_run"]'), github.event_name) && 'debiantripleu-ci' || 'ubuntu-latest' }}
     strategy:
       matrix:
         node-version: ["20", "22"]
@@ -40,7 +40,7 @@ jobs:
 
   test:
     name: Unit tests (Node 20 & 22)
-    runs-on: ubuntu-latest
+    runs-on: ${{ !contains(fromJSON('["pull_request","pull_request_review","pull_request_target","issue_comment","workflow_run"]'), github.event_name) && 'debiantripleu-ci' || 'ubuntu-latest' }}
     strategy:
       matrix:
         node-version: ["20", "22"]
@@ -60,7 +60,7 @@ jobs:
   # fixture must fail the PR rather than rely on someone spotting it in review.
   secrets:
     name: Secret scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ !contains(fromJSON('["pull_request","pull_request_review","pull_request_target","issue_comment","workflow_run"]'), github.event_name) && 'debiantripleu-ci' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,7 +72,7 @@ jobs:
 
   build:
     name: Production build (Node 20 & 22)
-    runs-on: ubuntu-latest
+    runs-on: ${{ !contains(fromJSON('["pull_request","pull_request_review","pull_request_target","issue_comment","workflow_run"]'), github.event_name) && 'debiantripleu-ci' || 'ubuntu-latest' }}
     strategy:
       matrix:
         node-version: ["20", "22"]
