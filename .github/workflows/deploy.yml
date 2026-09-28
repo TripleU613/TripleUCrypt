@@ -50,7 +50,7 @@ jobs:
   # than a race.
   gate:
     name: Test gate
-    runs-on: [self-hosted, linux, x64, debiantripleu-ci]
+    runs-on: debiantripleu-ci
     timeout-minutes: 15
     # actions/checkout needs this. Without it the workflow-level `permissions: {}`
     # leaves the token with no scopes and checkout fails "Repository not found"
@@ -73,7 +73,7 @@ jobs:
 
   deploy:
     needs: gate
-    runs-on: [self-hosted, linux, x64, debiantripleu-ci]
+    runs-on: debiantripleu-ci
     timeout-minutes: 25
     steps:
       - name: Set up SSH
